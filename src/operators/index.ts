@@ -24,6 +24,8 @@ import type { AgentLoop } from '../agent/index.js';
 import type { Target } from '../types/index.js';
 import { OPERATOR_SYSTEM_PROMPTS } from '../prompts/index.js';
 import { gateLiveFinding } from '../evidence/gate.js';
+import type { RiskTierGate } from '../governance/risk-tiers.js';
+import type { HITLGateManager } from '../governance/hitl.js';
 
 // =============================================================================
 // OPERATOR EVENTS
@@ -41,6 +43,9 @@ export interface OperatorEvents {
   'detection:risk_increased': { newRisk: number };
   'cooldown:started': { durationMs: number };
   'cooldown:ended': void;
+  'governance:approval_required': { operatorId: string; archetype: string; tool: string; riskTier: string };
+  'governance:approval_granted': { operatorId: string; tool: string };
+  'governance:approval_denied': { operatorId: string; tool: string; reason: string };
 }
 
 export interface CellEvents {
@@ -275,6 +280,13 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   private credentials: Credential[] = [];
   /** White-box source excerpt (security-prioritized), set by TempestCommand.setWhiteboxSource */
   private whiteboxSource: string = '';
+  private riskTierGate?: RiskTierGate;
+  private hitlGate?: HITLGateManager;
+
+  setGovernanceGates(riskTiers: RiskTierGate, hitl: HITLGateManager): void {
+    this.riskTierGate = riskTiers;
+    this.hitlGate = hitl;
+  }
 
   constructor(
     callsign: string,
@@ -346,6 +358,45 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
 
     try {
       this.setStatus('executing');
+
+      // Governance gate: check risk tier of tools this archetype uses
+      if (this.riskTierGate && this.hitlGate) {
+        const tools = this.profile.defaultTools;
+        for (const tool of tools) {
+          const gateResult = await this.riskTierGate.checkGate(tool, target?.address);
+          if (gateResult.requiresApproval) {
+            this.emit('governance:approval_required', {
+              operatorId: this.id,
+              archetype: this.archetype,
+              tool,
+              riskTier: gateResult.tier,
+            });
+            const approved = await this.hitlGate.requestApproval(
+              this.id,
+              this.archetype,
+              tool,
+              `Execute ${tool} for task "${task.name}"`,
+              gateResult.tier,
+            );
+            if (!approved) {
+              this.emit('governance:approval_denied', { operatorId: this.id, tool, reason: 'HITL denied' });
+              this._state.failedTasks++;
+              this._state.currentTask = null;
+              this.setStatus('idle');
+              return { success: false, error: `HITL: approval denied for ${tool} (tier=${gateResult.tier})` };
+            }
+            this.emit('governance:approval_granted', { operatorId: this.id, tool });
+          }
+          if (!gateResult.allowed && !gateResult.requiresApproval) {
+            this.emit('governance:approval_denied', { operatorId: this.id, tool, reason: gateResult.reason ?? 'scope check failed' });
+            this._state.failedTasks++;
+            this._state.currentTask = null;
+            this.setStatus('idle');
+            return { success: false, error: `Risk gate: ${gateResult.reason}` };
+          }
+        }
+      }
+
       const result = await this.executeTask(task, target);
 
       this._state.completedTasks++;
@@ -769,11 +820,24 @@ export class OperatorCell extends EventEmitter<CellEvents> {
   private operators: Map<string, OperatorAgent> = new Map();
   private maxOperators: number;
   private llm?: LLMBackbone;
+  private riskTierGate?: RiskTierGate;
+  private hitlGate?: HITLGateManager;
 
   constructor(maxOperators: number = 10, llm?: LLMBackbone) {
     super();
     this.maxOperators = maxOperators;
     this.llm = llm;
+  }
+
+  /**
+   * Set governance gates for all current and future operators
+   */
+  setGovernanceGates(riskTiers: RiskTierGate, hitl: HITLGateManager): void {
+    this.riskTierGate = riskTiers;
+    this.hitlGate = hitl;
+    for (const operator of this.operators.values()) {
+      operator.setGovernanceGates(riskTiers, hitl);
+    }
   }
 
   /**
@@ -810,6 +874,10 @@ export class OperatorCell extends EventEmitter<CellEvents> {
     }
 
     const operator = new OperatorAgent(callsign, archetype, config, this.llm);
+
+    if (this.riskTierGate && this.hitlGate) {
+      operator.setGovernanceGates(this.riskTierGate, this.hitlGate);
+    }
 
     // Forward operator events
     operator.on('status:changed', ({ oldStatus }) => {

@@ -105,6 +105,15 @@ export type { ArsenalEvents, ToolExecution } from './arsenal/index.js';
 export { AgentLoop, createAgentLoop, runAgentTask } from './agent/index.js';
 export type { AgentLoopOptions, AgentStep, AgentResult, AgentEvents } from './agent/index.js';
 
+// Governance (defensive pivot)
+export { createGovernanceStack, createSCPClient, createOrgIntentEnforcer, createHITLGateManager, createRiskTierGate } from './governance/index.js';
+export type { GovernanceStack, GovernanceStackConfig, SCPClient, OrgIntentEnforcer, HITLGateManager, RiskTierGate } from './governance/index.js';
+export type { SCPTier, SCPSink, RiskTier, HITLRequest, BoundaryCheckResult, HardBoundaryId } from './governance/index.js';
+
+// Defensive operators
+export { DEFENSIVE_ARCHETYPE_PROFILES, DEFENSIVE_TEAM_PRESETS, DEFENSIVE_TO_OFFENSIVE_MAP, DefenseChainPhase } from './operators/defensive.js';
+export type { DefensiveArchetype, DefensiveArchetypeProfile, DefensiveTeamPreset } from './operators/defensive.js';
+
 // OPSEC
 export {
   OpsecController,
@@ -229,6 +238,7 @@ import { LLMBackbone } from './llm/index.js';
 import { getLLMConfig } from './config/index.js';
 import { AgentLoop } from './agent/index.js';
 import { OpGeneral } from './general/index.js';
+import { createGovernanceStack, type GovernanceStack } from './governance/index.js';
 
 // Stubs for advanced modules
 import {
@@ -299,6 +309,9 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
   // Autonomous Op General
   public readonly general: OpGeneral;
+
+  // Governance stack (SCP + org-intent + HITL + risk tiers)
+  public readonly governance?: GovernanceStack;
 
   private running: boolean = false;
   private paused: boolean = false;
@@ -374,6 +387,25 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       this.mission,
       this.opsec
     );
+
+    // Governance stack — wire SCP, org-intent, HITL, risk tiers into subsystems
+    if (config.governance?.enabled !== false && config.governance) {
+      this.governance = createGovernanceStack({
+        scp: { enabled: true },
+        hitl: {
+          autoApproveLow: config.governance.autoApproveLow ?? true,
+          requestTimeoutMs: config.governance.requestTimeoutMs ?? 0,
+        },
+        orgIntentPath: config.governance.orgIntentPath,
+        authorizedScope: config.governance.authorizedScope,
+      });
+
+      this.arsenal.setSCPClient(this.governance.scp);
+      this.vault.setSCPClient(this.governance.scp);
+      this.llm.setSCPClient(this.governance.scp);
+      this.mission.setOrgIntentEnforcer(this.governance.orgIntent);
+      this.cell.setGovernanceGates(this.governance.riskTiers, this.governance.hitl);
+    }
 
     // Wire up events
     this.setupEventForwarding();
@@ -595,6 +627,10 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       description: `Automated mission for ${targetNames}`,
       objectives: ['Enumerate attack surface', 'Identify vulnerabilities', 'Validate findings'],
     });
+    if (!mission) {
+      this.emit('governance:mission_blocked', { reason: 'createMission returned null (org-intent)' });
+      return;
+    }
     this.mission.startMission(mission.id);
   }
 
@@ -980,6 +1016,9 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       maxTokens: 50000,
       toolCategories: profile.toolCategories,
     });
+    if (this.governance) {
+      agentLoop.setSCPClient(this.governance.scp);
+    }
     operator.attachArsenal(this.arsenal, agentLoop);
 
     // If a white-box source was already set (repo ingested before this operator
@@ -1091,6 +1130,8 @@ export interface Tempest {
   evasion: EvasionEngine;
   reporting: ReportingEngine;
   workflow: WorkflowOrchestrator;
+  // Governance (defensive pivot)
+  governance?: GovernanceStack;
 }
 
 // =============================================================================
@@ -1134,6 +1175,8 @@ export function createTempest(config: TempestConfig): Tempest {
     evasion: command.evasion,
     reporting: command.reporting,
     workflow: command.workflow,
+    // Governance (defensive pivot)
+    governance: command.governance,
   };
 }
 

@@ -15,6 +15,7 @@ import {
   type OperatorArchetype,
 } from '../types/index.js';
 import { KILL_CHAIN_ORDER } from '../operators/index.js';
+import type { OrgIntentEnforcer } from '../governance/org-intent.js';
 
 // =============================================================================
 // EVENTS
@@ -28,6 +29,8 @@ export interface MissionEvents {
   'mission:completed': Mission;
   'mission:aborted': { mission: Mission; reason: string };
   'mission:phase_changed': { mission: Mission; oldPhase: KillChainPhase; newPhase: KillChainPhase };
+  'governance:mission_blocked': { name: string; boundary: string; escalation: string };
+  'governance:phase_blocked': { missionId: string; boundary: string; escalation: string };
   'task:created': Task;
   'task:assigned': { task: Task; operatorId: string };
   'task:completed': { task: Task; result: TaskResult };
@@ -224,6 +227,11 @@ export class MissionControl extends EventEmitter<MissionEvents> {
   private missions: Map<string, Mission> = new Map();
   private taskQueue: TaskQueue;
   private activeMissionId: string | null = null;
+  private orgIntent?: OrgIntentEnforcer;
+
+  setOrgIntentEnforcer(orgIntent: OrgIntentEnforcer): void {
+    this.orgIntent = orgIntent;
+  }
 
   constructor() {
     super();
@@ -242,7 +250,21 @@ export class MissionControl extends EventEmitter<MissionEvents> {
     objectives: string[];
     phases?: KillChainPhase[];
     rules?: RulesOfEngagement;
-  }): Mission {
+  }): Mission | null {
+    // org-intent boundary check before mission creation
+    if (this.orgIntent) {
+      const rules = params.rules || createDefaultRoE();
+      const check = this.orgIntent.validateMission(params.name, rules.scope, params.objectives);
+      if (!check.allowed) {
+        this.emit('governance:mission_blocked', {
+          name: params.name,
+          boundary: check.boundary ?? 'unknown',
+          escalation: check.escalation ?? 'Mission blocked by org-intent',
+        });
+        return null;
+      }
+    }
+
     const mission: Mission = {
       id: randomUUID(),
       name: params.name,
@@ -427,7 +449,32 @@ export class MissionControl extends EventEmitter<MissionEvents> {
     }
 
     const oldPhase = mission.currentPhase;
-    mission.currentPhase = mission.phases[currentIndex + 1];
+    const newPhase = mission.phases[currentIndex + 1];
+
+    // org-intent boundary check before phase advancement
+    if (this.orgIntent) {
+      const scope = mission.rules?.scope ?? [];
+      const targets = mission.targets ?? [];
+      const hasAuthorizedTargets = scope.length > 0 && targets.every(
+        (t: string) => scope.some((s: string) => t.includes(s))
+      );
+      const check = this.orgIntent.checkBoundaries('advance_phase', {
+        isAuthorizedTarget: hasAuthorizedTargets,
+        targetAddress: targets[0],
+        phase: newPhase,
+        scope,
+      });
+      if (!check.allowed) {
+        this.emit('governance:phase_blocked', {
+          missionId,
+          boundary: check.boundary ?? 'unknown',
+          escalation: check.escalation ?? 'Phase advance blocked by org-intent',
+        });
+        throw new Error(`ESCALATE: Phase advance blocked — ${check.escalation}`);
+      }
+    }
+
+    mission.currentPhase = newPhase;
     mission.progress = ((currentIndex + 1) / mission.phases.length) * 100;
 
     this.emit('mission:phase_changed', { mission, oldPhase, newPhase: mission.currentPhase });

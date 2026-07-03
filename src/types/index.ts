@@ -458,6 +458,15 @@ export interface TempestConfig {
   };
   tools?: CustomTool[];
   hooks?: RuntimeHooks;
+  /** Governance stack configuration. When provided, SCP gates, org-intent
+   *  boundaries, HITL gates, and risk tiers are wired into all subsystems. */
+  governance?: {
+    enabled?: boolean;
+    orgIntentPath?: string;
+    authorizedScope?: string[];
+    autoApproveLow?: boolean;
+    requestTimeoutMs?: number;
+  };
 }
 
 export interface RuntimeHooks {

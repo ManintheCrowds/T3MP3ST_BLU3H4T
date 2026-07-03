@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/mcp/main/schema/mcp.json",
+  "_comment": "SCP MCP Bridge — connects T3MP3ST BLU3H4T to the Python SCP pipeline. Adjust 'command' and 'args' paths to your local deployment.",
+  "mcpServers": {
+    "scp-pipeline": {
+      "command": "python",
+      "args": ["../local-proto/scripts/scp_mcp.py"],
+      "env": {
+        "HARNESS_ROOT": "../",
+        "SCP_SEMANTIC_JUDGE": "0"
+      },
+      "transport": "stdio",
+      "description": "Secure-Contain-Protect content gate — inspects, sanitizes, contains, and quarantines untrusted content before it enters LLM context, evidence vault, or state."
+    },
+    "provenance": {
+      "command": "python",
+      "args": ["../local-proto/scripts/provenance_mcp.py"],
+      "env": {},
+      "transport": "stdio",
+      "description": "Document and IOC provenance tracking — records source, hash, and trust level for all external content."
+    }
+  }
+}

@@ -18,6 +18,7 @@ import { join } from 'path';
 import type { LLMConfig, LLMMessage, LLMResponse, LLMProvider, LLMToolDefinition, LLMToolCall, FallbackEntry } from '../types/index.js';
 import { config } from '../config/index.js';
 import { localAgentChat } from '../agent/local-agents.js';
+import type { SCPClient } from '../governance/scp-client.js';
 
 // =============================================================================
 // LLM EVENTS
@@ -34,6 +35,7 @@ export interface LLMEvents {
    *  rate_limit/auth/timeout/server_error/context_length/…) or recovered_after:*. */
   'request:fallback': { fromModel: string; toModel: string | null; engaged: boolean; reason?: string };
   'token:stream': { token: string };
+  'governance:content_blocked': { tier: string; contentPreview: string };
 }
 
 // =============================================================================
@@ -1005,6 +1007,11 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
   private conversationHistory: LLMMessage[] = [];
   private retryAttempts: number = 3;
   private retryDelayMs: number = 1000;
+  private scp?: SCPClient;
+
+  setSCPClient(scp: SCPClient): void {
+    this.scp = scp;
+  }
 
   constructor(config: LLMConfig) {
     super();
@@ -1142,6 +1149,23 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
       }
 
       // ── success ──
+
+      // SCP gate: inspect LLM response content for injection/reversal before returning
+      if (this.scp && response.content) {
+        const scpResult = await this.scp.inspectContent(response.content, 'llm_response');
+        if (scpResult.tier === 'injection' || scpResult.tier === 'reversal') {
+          this.emit('governance:content_blocked', {
+            tier: scpResult.tier,
+            contentPreview: response.content.slice(0, 120),
+          });
+          if (hasNext) {
+            trail.push(`${hop.model}:scp_blocked`);
+            continue;
+          }
+          response = { ...response, content: `[BLOCKED by SCP: LLM response classified as ${scpResult.tier}-tier]` };
+        }
+      }
+
       this.emit('request:complete', { response, durationMs: Date.now() - startTime });
       if (onFallback) {
         this.emit('request:fallback', { fromModel: this.config.model, toModel: hop.model, engaged: true, reason: `recovered_after:${trail.join('>')}` });

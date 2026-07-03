@@ -20,6 +20,7 @@ import type {
   Target,
   LLMToolDefinition,
 } from '../types/index.js';
+import type { SCPClient } from '../governance/scp-client.js';
 
 const dnsResolve = promisify(dns.resolve);
 const dnsResolve4 = promisify(dns.resolve4);
@@ -67,6 +68,7 @@ export interface ArsenalEvents {
   'tool:registered': CustomTool;
   'tool:executed': { tool: CustomTool; result: ToolResult; durationMs: number };
   'tool:error': { tool: CustomTool; error: Error };
+  'tool:scp_blocked': { tool: CustomTool; tier: string };
 }
 
 export interface ToolExecution {
@@ -85,6 +87,11 @@ export interface ToolExecution {
 export class Arsenal extends EventEmitter<ArsenalEvents> {
   private tools: Map<string, CustomTool> = new Map();
   private executions: ToolExecution[] = [];
+  private scp?: SCPClient;
+
+  setSCPClient(scp: SCPClient): void {
+    this.scp = scp;
+  }
 
   /**
    * Register a tool
@@ -147,6 +154,24 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
 
     try {
       const result = await tool.handler(context);
+
+      if (this.scp) {
+        const scpResult = await this.scp.validateOutput(
+          JSON.stringify(result.data ?? result.output ?? ''),
+          toolName,
+        );
+        if (scpResult.action === 'blocked') {
+          this.emit('tool:scp_blocked', { tool, tier: scpResult.tier });
+          return { success: false, error: `SCP: content blocked (tier=${scpResult.tier})` };
+        }
+        if (scpResult.action === 'sanitized' && scpResult.sanitized) {
+          this.emit('tool:scp_sanitized', { tool, tier: scpResult.tier });
+          const sanitizedData = JSON.parse(scpResult.sanitized);
+          if (result.data) result.data = sanitizedData;
+          else if (result.output) result.output = sanitizedData;
+        }
+      }
+
       const durationMs = Date.now() - startTime;
 
       execution.completedAt = Date.now();

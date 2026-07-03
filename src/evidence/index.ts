@@ -14,6 +14,7 @@ import type {
   Vulnerability,
 } from '../types/index.js';
 import { gateLiveFinding } from './gate.js';
+import type { SCPClient } from '../governance/scp-client.js';
 
 // =============================================================================
 // CREDENTIAL REDACTION — secrets NEVER leave the process in an API/LLM output
@@ -40,6 +41,7 @@ export interface EvidenceVaultEvents {
   'finding:updated': Finding;
   'finding:verified': Finding;
   'finding:gate-blocked': Finding;
+  'finding:scp_blocked': { finding: Finding; tier: string };
   'credential:added': Credential;
   'credential:validated': Credential;
   'evidence:added': { findingId: string; evidence: Evidence };
@@ -72,14 +74,36 @@ export function cvssToSeverity(cvss: number): Severity {
 export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   private findings: Map<string, Finding> = new Map();
   private credentials: Map<string, Credential> = new Map();
+  private scp?: SCPClient;
+
+  setSCPClient(scp: SCPClient): void {
+    this.scp = scp;
+  }
 
   /**
-   * Add a finding
+   * Add a finding (SCP-gated: content is inspected before persistence)
    */
-  addFinding(finding: Finding): Finding {
+  async addFinding(finding: Finding): Promise<Finding | undefined> {
     if (!finding.id) {
       finding.id = randomUUID();
     }
+
+    if (this.scp) {
+      const scpResult = await this.scp.runPipeline(
+        JSON.stringify({ title: finding.title, description: finding.description }),
+        'state',
+      );
+      if (scpResult.action === 'blocked') {
+        this.emit('finding:scp_blocked', { finding, tier: scpResult.tier });
+        return undefined;
+      }
+      if (scpResult.action === 'sanitized' && scpResult.sanitized) {
+        const sanitized = JSON.parse(scpResult.sanitized);
+        if (sanitized.title) finding.title = sanitized.title;
+        if (sanitized.description) finding.description = sanitized.description;
+      }
+    }
+
     this.findings.set(finding.id, finding);
     this.emit('finding:added', finding);
     return finding;
@@ -173,12 +197,24 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   }
 
   /**
-   * Add a credential
+   * Add a credential (SCP-gated: source field is inspected before persistence)
    */
-  addCredential(credential: Credential): Credential {
+  async addCredential(credential: Credential): Promise<Credential> {
     if (!credential.id) {
       credential.id = randomUUID();
     }
+
+    if (this.scp) {
+      const scpResult = await this.scp.runPipeline(credential.source, 'state');
+      if (scpResult.action === 'blocked') {
+        this.emit('finding:scp_blocked', { finding: { id: credential.id, title: 'credential', description: credential.source } as unknown as Finding, tier: scpResult.tier });
+        return credential;
+      }
+      if (scpResult.action === 'sanitized' && scpResult.sanitized) {
+        credential.source = scpResult.sanitized;
+      }
+    }
+
     this.credentials.set(credential.id, credential);
     this.emit('credential:added', credential);
     return credential;

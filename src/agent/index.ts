@@ -9,6 +9,7 @@
 import { EventEmitter } from 'eventemitter3';
 import type { LLMBackbone } from '../llm/index.js';
 import type { Arsenal } from '../arsenal/index.js';
+import type { SCPClient } from '../governance/scp-client.js';
 import type {
   LLMMessage,
   LLMToolDefinition,
@@ -82,6 +83,11 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
   private llm: LLMBackbone;
   private arsenal: Arsenal;
   private options: Required<AgentLoopOptions>;
+  private scp?: SCPClient;
+
+  setSCPClient(scp: SCPClient): void {
+    this.scp = scp;
+  }
 
   constructor(llm: LLMBackbone, arsenal: Arsenal, options?: AgentLoopOptions) {
     super();
@@ -184,7 +190,17 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
             }
 
             // Build tool result content
-            const resultContent = this.formatToolResult(toolStep.toolResult);
+            let resultContent = this.formatToolResult(toolStep.toolResult);
+
+            // SCP gate: inspect tool result before injecting into LLM context
+            if (this.scp) {
+              const scpResult = await this.scp.validateOutput(resultContent, toolCall.name);
+              if (scpResult.action === 'blocked') {
+                resultContent = '[BLOCKED by SCP: tool output classified as unsafe]';
+              } else if (scpResult.action === 'sanitized') {
+                resultContent = scpResult.content;
+              }
+            }
 
             // Add tool result to context
             messages.push({

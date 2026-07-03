@@ -1,6 +1,4 @@
-# 🌩️ T3MP3ST 🌩️
-
-<!-- ⊰ sharp eye on the raw source. there's a flag for the curious: T3MP3ST{r3c31pt5_n0t_v1b3z} — the one that counts, you earn: run `npm run verify-claims`. LOVE PLINY ⊱ -->
+# T3MP3ST BLU3H4T
 
 ```
  ▄▄▄█████▓▓█████  ███▄ ▄███▓ ██▓███  ▓█████   ██████ ▄▄▄█████▓
@@ -12,162 +10,158 @@
      ░     ░ ░  ░░  ░      ░░▒ ░      ░ ░  ░░ ░▒  ░ ░    ░
    ░         ░   ░      ░   ░░          ░   ░  ░  ░    ░
              ░  ░       ░               ░  ░      ░
+          ____  _    _   _ _____ _  _   _ _____
+         | __ )| |  | | | |___ /| || | / |_   _|
+         |  _ \| |  | | | | |_ \| || |_| | | |
+         | |_) | |__| |_| |___) |__   _| | | |
+         |____/|_____\___/|____/   |_| |_| |_|
 ```
 
-<div align="center">
+**Autonomous blue team defense platform. Multi-agent defensive security meta-harness.**
 
-**A multi-agent offensive-security framework, built to turn the AI coding agent you already run into a zero-day hunter.**
+Protect your organization from unethical red teams — including autonomous AI attackers.
 
-![scores: re-derivable](https://img.shields.io/badge/scores-re--derivable-brightgreen) &nbsp; ![verify-claims 20/20](https://img.shields.io/badge/verify--claims-20%2F20-brightgreen) &nbsp; ![PRs welcome](https://img.shields.io/badge/PRs-welcome-purple) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey)
+---
 
-</div>
+## What is BLU3H4T?
 
-Point T3MP3ST at a target and it works the offensive kill chain (**recon → exploit → report**) from a web War Room or the CLI, powered by a local agent you're already signed into (Claude Code, Codex, or Hermes).
-
-Today, the recon engine is live and tool-backed, and the exploit loop is benchmark-proven: 90.1% pass@1 on XBEN, every flag from a live exploit (reproducible below). The full 8-operator swarm is the architecture it grows into; the [status table](#what-ships-today) is exact about what's live, what's scaffolding, and what's still roadmap. Loud about the mission, honest that it's still a mission.
+BLU3H4T **inverts the offensive kill chain**. Where the upstream T3MP3ST
+framework sends 8 operators down the attack pipeline (recon → exploit →
+exfil), BLU3H4T deploys 8 *defensive* operators that model attacker behavior
+to **detect**, **validate**, and **respond** to threats against your
+organization.
 
 Three things set it apart:
 
-1. **Reproducible.** Every benchmark number in this README recomputes from committed data. `npm run verify-claims` re-derives all of them. A number that can't be reproduced doesn't ship.
-2. **Keyless.** The AI coding agent on your machine is the backbone. No second bill.
-3. **Honest about scope.** The [status table](#what-ships-today) marks exactly what is stable, experimental, or still roadmap. No claim here comes from a mode this README doesn't name.
+1. **Governance-first.** SCP content gates, org-intent hard boundaries
+   (hb-1..hb-5), and human-in-the-loop approval gates compose a governance
+   stack that no pure offensive framework has. Every active-response action
+   requires human confirmation.
+2. **Purple team built in.** The VALIDATOR operator can probe your own
+   systems — with strict scoping and HITL gates — to find vulnerabilities
+   before attackers do.
+3. **Anti-AI red team.** Designed to detect autonomous AI agents performing
+   unauthorized reconnaissance and exploitation. WATCHER identifies the
+   traffic signatures of tool-driven, rapid-sequential probing.
 
-## Why it exists
+## Defensive operators
 
-Offensive security sits behind years of practice and expensive tooling. The bet behind T3MP3ST is that a coordinated agent swarm puts real bug-hunting in reach of people who never got the invite, across web apps, CTFs, smart contracts, source code, and embedded/robotics OSS. That is an ambitious bet, and the sections below are careful to separate what already works from what is still a bet.
-
-## What it hunts
-
-| Domain | What it does | Status |
+| Operator | D3FEND | What it does |
 |---|---|---|
-| 🕸️ **Web apps** | Black-box, external-attacker recon → exploit (XBEN suite) | ✅ Stable |
-| 🚩 **CTF** | Hint-free, sandbox-jailed solves (Cybench) | ✅ Stable |
-| 🤖 **Robotics / OT / embedded** | Coordinated-disclosure pipeline for OSS vuln hunting (OSV + live-PoC + refuter) | ✅ Pipeline stable |
-| 📂 **Source code** | White-box repo analysis with blind master-builder decomposition | ⚠️ Python-only ingest |
-| 💰 **Smart contracts** | Damn Vulnerable DeFi | ⚠️ reproduction, not novel discovery |
+| **SENTINEL** | Detect | Monitor attack surface; detect recon against us |
+| **WATCHER** | Data Analysis | Analyze logs, traffic, alerts for attack patterns |
+| **VALIDATOR** | Test/Evaluate | Purple team: test OUR systems for vulnerabilities |
+| **HUNTER** | Test/Evaluate | Proactive threat hunting for IOCs and lateral movement |
+| **RESPONDER** | Evict/Restore | Incident response: contain, isolate, remediate |
+| **DECEIVER** | Deceive | Deploy honeypots, honeytokens, canary files |
+| **GUARDIAN** | Governance | SCP + org-intent + HITL gate coordination |
+| **ANALYST** | Reporting | SOC dashboards, compliance reports, threat briefs |
+
+## Governance stack
+
+Every content boundary and active response flows through the governance layer:
+
+```
+External content (tool output, feeds, LLM responses)
+  │
+  ├── SCP Pipeline ──── inspect → sanitize → contain → quarantine
+  │
+  ├── org-intent ────── hb-1..hb-5 hard boundary checks
+  │
+  ├── Risk Tiers ────── Low (pass) / Med (scope check) / High (APPROVAL_NEEDED)
+  │
+  └── HITL Gates ────── requestApproval() / escalate() / requestGuidance()
+```
+
+Source: `src/governance/` — `scp-client.ts`, `org-intent.ts`, `hitl.ts`, `risk-tiers.ts`
 
 ## Quick start
-
-Fastest path to a running War Room (keyless, ~2 min to set up; mission time depends on the target):
 
 ```bash
 npm install
 npm run server        # War Room → http://127.0.0.1:3333/ui/
 ```
 
-In the War Room, open **Settings** and connect a local agent (Claude Code / Codex / Hermes). Then describe a target to **Op Admiral** in plain English and launch. The agent you connected is the brain. No key required.
-
-Prefer to bring a key? Set one and skip the connect step:
+Connect a local agent (Claude Code / Codex / Hermes) in Settings, or set an API key:
 
 ```bash
-export OPENROUTER_API_KEY=...     # or VENICE_API_KEY / ANTHROPIC_API_KEY
+export OPENROUTER_API_KEY=...     # or ANTHROPIC_API_KEY
 ```
-
-Check the numbers for yourself:
-
-```bash
-npm run verify-claims             # re-derives every headline from committed JSON in bench/
-```
-
-Library/SDK usage, the full HTTP API, and MCP setup live in [docs/](docs/).
-
-## What ships today
-
-The framework is an 8-operator kill chain. **Recon is a live, tool-backed engine.** Most downstream operators are scaffolding today, and this table says so. A live report currently shows `Successful Exploits: 0` outside the benchmarked path, and the copy here will never contradict that.
-
-| Component | Status | Notes |
-|---|---|---|
-| Re-derivable measurement (`verify-claims`) | ✅ Stable | every headline recomputes from committed artifacts |
-| Recon engine | ✅ Stable | drives nmap / DNS / HTTP / fingerprinting; every finding traces to real tool output |
-| Mission engine + War Room + Op Admiral | ✅ Stable | keyless through a connected local agent |
-| Arsenal, MCP server, HTTP API | ✅ Stable | 35 tools; `security_recon` over MCP |
-| Coordinated-disclosure pipeline | ✅ Stable | OSV novelty + live PoC + refuter panel + CVSS; drafts only, a human sends |
-| White-box source analysis | ⚠️ Experimental | Python-only regex ingest; multi-model decomposition costs more tokens, not fewer |
-| DeFi (Damn Vulnerable DeFi) | ⚠️ Experimental | reproduces known exploit classes; not novel discovery |
-| Exploiter / Infiltrator / Exfiltrator / Ghost | 🚧 Scaffolding | interface + orchestration stubs, not autonomous exploit engines |
-| Advanced modules (cloud, persistence, swarm, cognition) | 🚧 Planned | interface-only in `src/stubs/` |
-| Self-improvement loop | 🧪 Research | records lessons + proposals today; feeding them back into planning is roadmap |
-
-Full feature-by-feature breakdown: [FEATURES.md](FEATURES.md).
-
-## Benchmarks
-
-Headline results. Each recomputes from the committed JSON with `npm run verify-claims`; full methodology and caveats are in the linked docs.
-
-| Suite | Result | Context |
-|---|---|---|
-| **XBEN** — XBOW's 104-challenge suite, black-box | **pass@1 mean 90.1%** (Wilson-95 86.2–92.9), floor 91/104 · gpt-5.5 | XBOW self-reports 85% on the same suite; ours reproduces from artifacts |
-| **XBEN** — white-box (reported separately) | pass@1 98.7%, best-ball 100% (104/104) · gpt-5.5 | never blended with the black-box number |
-| **Cybench** — 40-task academic bench, Opus 4.8, no hints | 21/40 full corpus, 23/40 clean subset, single-run pass@1 | not the raw-score record (Anthropic reports 76.5% pass@10); the point is measurement integrity |
-| **CVE-Zero** — 10 real post-cutoff (2026) CVEs, hunted cold | 4/10 strict (exact file/line/CWE) | memorization-proof: targets postdate the training cutoff |
-
-**How to read these:**
-
-- Every solved flag came from a live exploit. Zero fabricated, enforced by an anti-fitting guard that runs on every push.
-- Black-box (source withheld) and white-box (source staged) are reported separately and never blended.
-- These ran a **single-agent ReAct loop, not the 8-operator swarm.** The swarm is framework architecture; it is not what scored these numbers.
-- Results are system-vs-system: this harness driving a strong current model, not an isolated-harness claim.
-
-XBOW self-reports 85% on its own suite. Ours reproduces from committed artifacts and clears it even at the Wilson floor. 
-
-Deeper reading: [WALL_FORENSICS](docs/WALL_FORENSICS.md) (per-challenge misses), [CYBENCH](docs/CYBENCH.md), [INTEGRITY_LEDGER](docs/INTEGRITY_LEDGER.md) (contamination audit and every retraction), [OBSIDIVM](docs/OBSIDIVM.md) (our own live web range).
-
-## Documentation
-
-| Doc | Contents |
-|---|---|
-| [FEATURES.md](FEATURES.md) | feature-by-feature status (`[x]` shipped / `[~]` partial / `[ ]` planned) |
-| [SCOPE_AND_AUTHORIZATION](docs/SCOPE_AND_AUTHORIZATION.md) | authority model, scope receipts, evidence and retest rules |
-| [TEAM_PREVIEW](docs/TEAM_PREVIEW.md) | first-run path and review script |
-| [INSTALL_MATRIX](docs/INSTALL_MATRIX.md) | macOS / Linux readiness table |
-| [ARSENAL_ACTIVATION_PLAN](docs/ARSENAL_ACTIVATION_PLAN.md) | optional external-tool setup |
-| [CYBENCH](docs/CYBENCH.md) · [WALL_FORENSICS](docs/WALL_FORENSICS.md) · [INTEGRITY_LEDGER](docs/INTEGRITY_LEDGER.md) · [COGNITIVE_ARCHITECTURE](docs/COGNITIVE_ARCHITECTURE.md) | benchmark methodology |
-| [RELEASE_CHECKLIST](docs/RELEASE_CHECKLIST.md) | the gates a release must pass |
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        T3MP3ST COMMAND                          │
+│                    BLU3H4T COMMAND CENTER                       │
 ├─────────────────────────────────────────────────────────────────┤
-│   MISSION CONTROL  ◄──  TARGET MODEL  ──►  ARSENAL (TOOLS)       │
+│   MISSION CONTROL  ◄──  GOVERNANCE STACK  ──►  ARSENAL (TOOLS)  │
 │                          ▲                                       │
-│   AGENT CELL:  RECON · SCANNER · EXPLOITER · INFILTRATOR ·       │
-│                EXFILTRATOR · GHOST · COORDINATOR · ANALYST       │
+│   DEFENSIVE OPERATORS:                                           │
+│   SENTINEL · WATCHER · VALIDATOR · HUNTER ·                      │
+│   RESPONDER · DECEIVER · GUARDIAN · ANALYST                      │
 │                          ▲                                       │
-│   EVIDENCE VAULT  ·  CREDENTIAL STORE  ·  FINDINGS LEDGER        │
+│   EVIDENCE VAULT  ·  SCP PIPELINE  ·  FINDINGS LEDGER            │
 │                          ▲                                       │
-│   OPSEC LAYER  ·  COMMS CHANNEL  ·  LLM BACKBONE                 │
+│   ORG-INTENT  ·  HITL GATES  ·  RISK TIERS  ·  AUDIT LOG        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Operators map to MITRE ATT&CK and Cyber Kill Chain phases (recon is live; later phases are scaffolded):
+## Operator-to-operator mapping (offensive → defensive)
 
-| Operator | Phase | MITRE | Function |
+| Offensive (upstream) | ATT&CK | Defensive (BLU3H4T) | D3FEND |
 |---|---|---|---|
-| **Recon** | Reconnaissance | TA0043 | OSINT, network discovery, asset enumeration |
-| **Scanner** | Discovery | TA0007 | vulnerability scanning, service fingerprinting |
-| **Exploiter** | Initial Access | TA0001 | exploitation, payload delivery |
-| **Infiltrator** | Lateral Movement | TA0008 | post-exploitation, privilege escalation |
-| **Exfiltrator** | Collection / Exfil | TA0009/10 | data extraction, credential harvesting |
-| **Ghost** | Persistence | TA0003 | persistence, stealth, cleanup |
-| **Coordinator** | Command & Control | TA0011 | mission control, orchestration |
-| **Analyst** | Analysis | — | pattern analysis, reporting |
+| Recon | TA0043 | SENTINEL | D3-DE |
+| Scanner | TA0007 | WATCHER | D3-DA |
+| Exploiter | TA0001 | VALIDATOR | D3-TE |
+| Infiltrator | TA0008 | HUNTER | D3-TE |
+| Exfiltrator | TA0009 | RESPONDER | D3-ER |
+| Ghost | TA0003 | DECEIVER | D3-DC |
+| Coordinator | TA0011 | GUARDIAN | — |
+| Analyst | — | ANALYST | — |
 
-**Providers:** OpenRouter, Venice, Anthropic, OpenAI, or a keyless local agent (Claude Code / Codex / Hermes). Set `OPENROUTER_API_KEY` / `VENICE_API_KEY` / `ANTHROPIC_API_KEY`, or connect an agent in Settings.
+## Team presets
 
-**Integrations:** `node dist/mcp-server.js` exposes `security_recon` to MCP-aware agents. `npm run server` starts the HTTP API (`POST /api/mission/start`, `GET /api/mission/status`, and more). Full reference in [docs/](docs/).
+| Preset | Operators | Use case |
+|---|---|---|
+| `balanced` | All 8 | Full defensive coverage |
+| `monitoring` | SENTINEL, WATCHER, GUARDIAN, ANALYST | Detection and reporting only |
+| `incident` | WATCHER, HUNTER, RESPONDER, GUARDIAN, ANALYST | Active incident response |
+| `purple` | SENTINEL, WATCHER, VALIDATOR, HUNTER, GUARDIAN, ANALYST | Detection + vulnerability validation |
 
-## Contributing — join the swarm
+## Documentation
 
-Red-teaming shouldn't be a priesthood. Bring an adapter, a prompt pack, a runbook, a new arsenal tool, or a bug report.
+| Doc | Contents |
+|---|---|
+| [COMPARATIVE_ANALYSIS](docs/COMPARATIVE_ANALYSIS.md) | Gap analysis: T3MP3ST vs Blue-Hat / SCP / PentAGI |
+| [SCOPE_AND_AUTHORIZATION](docs/SCOPE_AND_AUTHORIZATION.md) | Authority model, scope receipts, evidence rules |
+| [FEATURES](FEATURES.md) | Feature-by-feature status |
+| [WHITEPAPER](WHITEPAPER.md) | Technical architecture reference |
+| [VISION](VISION.md) | Research directions (defensive reframe) |
 
-**One rule, non-negotiable:** everything here is for **authorized testing only**. Owned, scoped, or consenting targets. Build for defenders, or don't build it here.
+## What this inherits from upstream T3MP3ST
 
-1. Fork it, branch it.
-2. Open a PR with tests. If you touch a headline number, `npm run verify-claims` has to stay green.
+The offensive infrastructure remains available for authorized purple team
+operations. The recon engine, Arsenal tools, benchmark system, and War Room UI
+are unchanged — what's new is the *governance layer* that wraps them and the
+*defensive operator profiles* that reframe how they're used.
 
-Release process and gates: [RELEASE_CHECKLIST](docs/RELEASE_CHECKLIST.md).
+| From upstream | Status | Defensive use |
+|---|---|---|
+| Recon engine | Stable | Attack surface monitoring (SENTINEL) |
+| Arsenal (15+ tools) | Stable | Validation tools (VALIDATOR, gated) |
+| War Room UI | Stable | SOC dashboard |
+| Evidence Vault | Stable | Incident evidence collection |
+| OPSEC layer | Stable | Inverted: detection targets, not avoidance |
+| Payload databases | Stable | Detection signatures |
+| Benchmark system | Stable | Measure detection rates |
+
+## Contributing
+
+Build for defenders. HITL gates and org-intent boundaries are non-negotiable.
+
+1. Fork → branch → PR with tests.
+2. Governance changes: add HITL gate coverage + org-intent boundary checks.
+3. New operators: define D3FEND tactic mapping, risk tier, and system prompt.
 
 ## License
 
@@ -175,10 +169,6 @@ MIT. See [LICENSE](LICENSE).
 
 ---
 
-<div align="center">
-
-*Fortes fortuna iuvat* — fortune favors the bold.
-
-⊰•-•✧ LOVE PLINY ✧•-•⊱ 🌩️
-
-</div>
+Forked from [elder-plinius/T3MP3ST](https://github.com/elder-plinius/T3MP3ST).
+Governance stack: SCP + org-intent + HITL from
+[portfolio harness](https://github.com/ManintheCrowds).
