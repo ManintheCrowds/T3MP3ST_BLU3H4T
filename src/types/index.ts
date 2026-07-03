@@ -467,6 +467,10 @@ export interface TempestConfig {
     autoApproveLow?: boolean;
     requestTimeoutMs?: number;
   };
+  /** Detection engine configuration (Phase 2). When enabled, signature
+   *  matching, ATT&CK rules, anomaly engine, AI agent detection, and
+   *  SIEM connectors are wired into the detection bus. */
+  detection?: import('../detection/types.js').DetectionConfig;
 }
 
 export interface RuntimeHooks {
@@ -550,6 +554,10 @@ export interface CommandEvents {
   'detection:triggered': DetectionEvent;
   'mission:phase_changed': { missionId: string; phase: KillChainPhase };
   'abort:recommended': string;
+  // Detection engine events (Phase 2)
+  'detection:alert_raised': { ruleId: string; severity: Severity; sourceIP?: string };
+  'detection:ai_agent_detected': { sourceIP: string; frameworkId?: string; confidence: number };
+  'detection:correlated': { alertCount: number; severity: Severity; sourceIP?: string };
 }
 
 // =============================================================================

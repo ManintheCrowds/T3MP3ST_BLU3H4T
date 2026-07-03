@@ -1,6 +1,6 @@
-# T3MP3ST Feature Documentation
+# T3MP3ST BLU3H4T Feature Documentation
 
-> Comprehensive feature list for the Tactical Execution Multi-agent Platform for Elite Security Testing
+> Autonomous blue team defense platform with governance-first multi-agent security
 
 **Legend:**
 - [x] Implemented and working
@@ -29,6 +29,10 @@
 16. [Advanced Modules](#16-advanced-modules)
 17. [Configuration System](#17-configuration-system)
 18. [Integration & Extensibility](#18-integration--extensibility)
+19. [Governance Stack](#19-governance-stack)
+20. [Defensive Operators](#20-defensive-operators)
+21. [Detection Engine](#21-detection-engine)
+22. [AI Red Team Detection](#22-ai-red-team-detection)
 
 ---
 
@@ -884,31 +888,183 @@
 
 ---
 
+## 19. Governance Stack
+
+The governance layer that pure offensive frameworks lack. Composes four subsystems gating all content and actions.
+
+Source: `src/governance/` — `scp-client.ts`, `org-intent.ts`, `hitl.ts`, `risk-tiers.ts`
+
+### SCP Pipeline (Secure-Contain-Protect)
+- [x] `inspectContent()` — tier classification (injection / reversal / clean)
+- [x] `runPipeline()` — inspect → sanitize → contain → quarantine per sink
+- [x] `validateOutput()` — gate tool output before return
+- [x] `maskSecrets()` — strip secrets from outbound content
+- [x] Event emission (`scp:inspected`, `scp:blocked`, `scp:sanitized`, `scp:passed`)
+- [x] Configurable quarantine-on-block policy
+- [x] Sink-based routing (`handoff`, `state`, `llm_context`, `tool_output`)
+- [x] Wired into Arsenal, EvidenceVault, AgentLoop, and LLMBackbone
+
+### Org-Intent (Hard Boundaries)
+- [x] 5 hard boundaries (hb-1..hb-5): authorized targets only, human confirmation for active response, no offensive action without scope receipt, data handling compliance, escalation on ambiguity
+- [x] `validateMission()` — pre-flight check before mission creation
+- [x] `checkBoundaries()` — context-aware boundary enforcement per action
+- [x] Wired into MissionControl (`createMission`, `advancePhase`)
+
+### HITL Gates (Human-in-the-Loop)
+- [x] `requestApproval()` — gated approval for high-risk tool execution
+- [x] `escalate()` — escalate to human when constraints conflict
+- [x] `requestGuidance()` — request human decision on ambiguous situations
+- [x] Auto-approve-low policy (configurable)
+- [x] Timeout-based fallback (configurable `requestTimeoutMs`)
+- [x] Wired into OperatorAgent via RiskTierGate checks
+
+### Risk Tiers
+- [x] 4-tier gate: Low (pass) / Medium (scope check) / High (APPROVAL_NEEDED) / Critical (team consensus)
+- [x] `checkGate()` — per-tool, per-target risk evaluation
+- [x] Audit trail for all gate decisions
+- [x] Wired into OperatorCell for all current and future operators
+
+---
+
+## 20. Defensive Operators
+
+8 defensive archetypes that invert the offensive kill chain. Each maps to MITRE D3FEND defensive techniques.
+
+Source: `src/operators/defensive.ts`
+
+### 8 Defensive Archetypes
+
+| Archetype | D3FEND | Defends Against | Phase | HITL Required |
+|-----------|--------|-----------------|-------|---------------|
+| **SENTINEL** | D3-DE | TA0043 (Recon) | Detection | No |
+| **WATCHER** | D3-DA | TA0007 (Discovery) | Analysis | No |
+| **VALIDATOR** | D3-TE | TA0001 (Initial Access) | Validation | Yes |
+| **HUNTER** | D3-TE | TA0008 (Lateral Movement) | Threat Hunting | Yes |
+| **RESPONDER** | D3-ER | TA0009 (Exfiltration) | Incident Response | Yes |
+| **DECEIVER** | D3-DC | TA0003 (Persistence) | Deception | Yes |
+| **GUARDIAN** | — | TA0011 (C2) | Governance | No |
+| **ANALYST** | — | — | Reporting | No |
+
+### Team Presets
+- [x] `balanced` — All 8 operators, full defensive coverage
+- [x] `monitoring` — SENTINEL, WATCHER, GUARDIAN, ANALYST (detection + reporting)
+- [x] `incident` — WATCHER, HUNTER, RESPONDER, GUARDIAN, ANALYST (active IR)
+- [x] `purple` — SENTINEL, WATCHER, VALIDATOR, HUNTER, GUARDIAN, ANALYST (detection + validation)
+
+### Defense Chain Phases
+- [x] DETECT → ANALYZE → VALIDATE → HUNT → RESPOND → DECEIVE → GOVERN → REPORT
+- [x] Phase-to-archetype mapping
+- [x] Offensive-to-defensive operator remapping
+
+---
+
+## 21. Detection Engine
+
+13-file subsystem for real-time threat detection, alert correlation, and SIEM integration.
+
+Source: `src/detection/`
+
+### Core Infrastructure
+- [x] `bus.ts` — Event bus for detection alerts and correlated events
+- [x] `registry.ts` — Rule registry with enable/disable and category filtering
+- [x] `types.ts` — Full type definitions (rules, alerts, events, anomaly baselines, AI profiles)
+- [x] `index.ts` — `createDetectionEngine()` factory wiring all components
+
+### Detectors
+- [x] `signatures.ts` — Signature-based pattern matching (SQLi, XSS, SSTI, LFI, SSRF, XXE, command injection, auth bypass)
+- [x] `attack-rules.ts` — MITRE ATT&CK mapped detection rules (recon, scanning, exploitation, lateral movement, exfiltration, persistence, credential access)
+- [x] `payloads.ts` — Payload pattern database for known attack tooling
+- [x] `anomaly.ts` — Statistical anomaly detection with adaptive baselines
+- [x] `ai-detector.ts` — AI agent detection (ReAct loop fingerprinting, tool signature matching, timing analysis)
+- [x] `correlator.ts` — Multi-alert correlation engine with temporal/spatial grouping
+
+### SIEM Connectors
+- [x] `connectors/wazuh.ts` — Wazuh SIEM integration (alert ingestion, rule sync)
+- [x] `connectors/elk.ts` — Elasticsearch/ELK stack integration (log ingestion, query)
+- [x] `connectors/types.ts` — Connector interface definitions
+- [ ] Splunk connector
+- [ ] QRadar connector
+
+### Detection Categories
+- [x] 19 rule categories: sqli, xss, ssti, lfi, ssrf, xxe, command_injection, auth_bypass, idor, recon, scanning, enumeration, exploitation, lateral_movement, exfiltration, persistence, credential_access, anomaly, ai_agent, custom
+- [x] 5 detector types: signature, attack_rule, anomaly, ai_detector, correlation
+
+### Integration with TempestCommand
+- [x] Bus events forwarded to command bus (`detection:alert_raised`, `detection:correlated`, `detection:ai_agent_detected`)
+- [x] SCP gate on correlated alerts before Evidence Vault persistence
+- [x] Connector Arsenal tool registration for WATCHER access
+- [x] Start/stop lifecycle tied to command lifecycle
+
+---
+
+## 22. AI Red Team Detection
+
+18-technique playbook for detecting and defending against autonomous AI red team attacks.
+
+Source: `src/resources/ai-redteam-playbook.ts`, `docs/ANTI_AI_REDTEAM_DESIGN.md`
+
+### Technique Categories
+- [x] Refusal suppression & semantic inversion
+- [x] Output prefill & forced-affirmation seeding
+- [x] Format-contract / response-scaffold hijack
+- [x] Divider / mode-switch token injection
+- [x] Counterfeit-authority & fake system-state spoofing
+- [x] Persona / roleplay displacement & identity inversion
+- [x] Fictional-frame / alternate-ethics world containers
+- [x] Dual-response & reasoning-channel (CoT) exploitation
+- [x] Encoding / obfuscation transforms (input & output)
+- [x] Invisible-Unicode steganography & covert channels
+- [x] Token-manipulation: homoglyphs, styled-Unicode, glitch tokens
+- [x] Length-detail amplification
+- [x] Tool-surface indirect injection
+- [x] Multi-turn crescendo
+- [x] Resource exhaustion / DoS
+- [x] System prompt extraction
+- [x] Payload splitting
+- [x] Stacked composition (layering multiple techniques)
+
+### Per-Technique Structure
+- [x] Stable kebab-case ID for each technique
+- [x] Principle: model behavior exploited + transferable carrier pattern
+- [x] Red team use: garak / promptfoo / agent loop integration instructions
+- [x] Defense: detection signals and mitigation strategies
+
+### AI Agent Detection Signals
+- [x] ReAct loop fingerprinting (rapid tool-call sequences)
+- [x] Kill chain sequencing (automated phase progression)
+- [x] Tool signature matching (known framework patterns)
+- [x] Timing analysis (sub-human response intervals)
+- [x] Behavioral anomaly scoring
+
+---
+
 ## Feature Roadmap Priority
 
 ### P0 - Critical (Next Release)
-1. [ ] Full API endpoint coverage for operators/targets/missions
-2. [ ] Real exploit execution in Pliny tools
-3. [ ] PDF report generation
-4. [ ] Scanner import (Nmap, Nuclei)
+1. [ ] Detection engine: expand SIEM connectors (Splunk, QRadar)
+2. [ ] Governance test coverage: SCP pipeline + HITL gate integration tests
+3. [ ] Full API endpoint coverage for operators/targets/missions
+4. [ ] PDF report generation
+5. [ ] Scanner import (Nmap, Nuclei)
 
 ### P1 - High (Near Term)
-1. [ ] Cloud security module (AWS/GCP/Azure)
-2. [ ] Function calling in LLM backbone
-3. [ ] WebSocket real-time updates
-4. [ ] Plugin system architecture
+1. [ ] Detection engine: Splunk and QRadar connectors
+2. [ ] AI red team detection: garak/promptfoo runner integration
+3. [ ] Function calling in LLM backbone
+4. [ ] WebSocket real-time updates for detection alerts
+5. [ ] Plugin system architecture
 
 ### P2 - Medium (Mid Term)
-1. [ ] Cognition patterns (CoT, ReAct)
-2. [ ] Swarm intelligence
-3. [ ] Learning engine
-4. [ ] Distributed operation support
+1. [ ] Cognition patterns (CoT, ReAct) for defensive reasoning
+2. [ ] Defensive swarm intelligence (coordinated detection)
+3. [ ] Learning engine (attack pattern memory)
+4. [ ] Distributed detection across multiple nodes
 
 ### P3 - Low (Long Term)
-1. [ ] Mobile app
-2. [ ] SaaS deployment
-3. [ ] Marketplace for tools/plugins
-4. [ ] AI-powered remediation suggestions
+1. [ ] SOC dashboard SaaS deployment
+2. [ ] Marketplace for detection rules/plugins
+3. [ ] AI-powered remediation suggestions
+4. [ ] Compliance report generation (PCI, HIPAA, SOC2)
 
 ---
 
@@ -921,5 +1077,5 @@
 
 ---
 
-*Last updated: December 2024*
-*Version: 1.0.0*
+*Last updated: July 2026*
+*Version: 2.0.0*

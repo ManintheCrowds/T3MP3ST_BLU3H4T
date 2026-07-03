@@ -1,8 +1,9 @@
 /**
- * T3MP3ST (TEMPEST)
- * Tactical Execution Multi-agent Platform for Elite Security Testing
+ * T3MP3ST BLU3H4T
+ * Autonomous Blue Team Defense Platform
  *
- * A sophisticated multi-agent framework for penetration testing and red team operations.
+ * Governance-first multi-agent defensive security framework with SCP content
+ * gates, org-intent boundaries, HITL approval gates, and detection engine.
  *
  * @example
  * ```typescript
@@ -113,6 +114,10 @@ export type { SCPTier, SCPSink, RiskTier, HITLRequest, BoundaryCheckResult, Hard
 // Defensive operators
 export { DEFENSIVE_ARCHETYPE_PROFILES, DEFENSIVE_TEAM_PRESETS, DEFENSIVE_TO_OFFENSIVE_MAP, DefenseChainPhase } from './operators/defensive.js';
 export type { DefensiveArchetype, DefensiveArchetypeProfile, DefensiveTeamPreset } from './operators/defensive.js';
+
+// Detection engine (Phase 2)
+export { createDetectionEngine } from './detection/index.js';
+export type { DetectionEngine, DetectionEngineStats, DetectionConfig, DetectionBusEvents, DetectionAlert, CorrelatedAlert, NormalizedEvent, DetectionRule } from './detection/index.js';
 
 // OPSEC
 export {
@@ -239,6 +244,7 @@ import { getLLMConfig } from './config/index.js';
 import { AgentLoop } from './agent/index.js';
 import { OpGeneral } from './general/index.js';
 import { createGovernanceStack, type GovernanceStack } from './governance/index.js';
+import { createDetectionEngine, type DetectionEngine } from './detection/index.js';
 
 // Stubs for advanced modules
 import {
@@ -312,6 +318,9 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
   // Governance stack (SCP + org-intent + HITL + risk tiers)
   public readonly governance?: GovernanceStack;
+
+  // Detection engine (Phase 2 — defensive detection)
+  public readonly detection?: DetectionEngine;
 
   private running: boolean = false;
   private paused: boolean = false;
@@ -407,6 +416,51 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       this.cell.setGovernanceGates(this.governance.riskTiers, this.governance.hitl);
     }
 
+    // Detection engine — wire bus, registry, detectors, connectors, correlator
+    if (config.detection?.enabled) {
+      this.detection = createDetectionEngine(config.detection);
+
+      // SCP gate on correlated alerts before Evidence Vault persistence
+      this.detection.bus.on('alert:correlated', async (correlated) => {
+        const finding = {
+          id: correlated.id,
+          title: correlated.aiAgentDetected
+            ? `AI Agent Detected: ${correlated.frameworkId ?? 'Unknown'}`
+            : `Correlated Alert: ${correlated.description.slice(0, 80)}`,
+          description: correlated.description,
+          severity: correlated.severity,
+          targetId: correlated.sourceIP ?? 'unknown',
+          operatorId: 'detection-engine',
+          phase: 'reconnaissance' as const,
+          evidence: correlated.alerts.map((a) => ({
+            type: 'log' as const,
+            content: `${a.ruleName}: ${a.matchedContent ?? a.description}`,
+            timestamp: a.timestamp,
+          })),
+          discoveredAt: correlated.timestamp,
+        };
+
+        if (this.governance) {
+          const scpResult = await this.governance.scp.runPipeline(
+            JSON.stringify({ title: finding.title, description: finding.description }),
+            'state',
+          );
+          if (scpResult.action === 'blocked') return;
+        }
+
+        this.vault.addFinding(finding);
+      });
+
+      // Register connector Arsenal tools for WATCHER access
+      if (config.detection.registerArsenalTools !== false) {
+        for (const connector of this.detection.connectors) {
+          if ('toArsenalTool' in connector) {
+            this.arsenal.register((connector as { toArsenalTool(): import('./types/index.js').CustomTool }).toArsenalTool());
+          }
+        }
+      }
+    }
+
     // Wire up events
     this.setupEventForwarding();
 
@@ -461,6 +515,33 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         this.taskSeeded = true;
       }
     });
+
+    // Forward detection engine events to command bus
+    if (this.detection) {
+      this.detection.bus.on('alert:raised', (alert) => {
+        this.emit('detection:alert_raised', {
+          ruleId: alert.ruleId,
+          severity: alert.severity,
+          sourceIP: alert.event.sourceIP,
+        });
+      });
+
+      this.detection.bus.on('alert:correlated', (correlated) => {
+        this.emit('detection:correlated', {
+          alertCount: correlated.alerts.length,
+          severity: correlated.severity,
+          sourceIP: correlated.sourceIP,
+        });
+
+        if (correlated.aiAgentDetected) {
+          this.emit('detection:ai_agent_detected', {
+            sourceIP: correlated.sourceIP ?? 'unknown',
+            frameworkId: correlated.frameworkId,
+            confidence: correlated.confidence,
+          });
+        }
+      });
+    }
   }
 
   /**
@@ -604,6 +685,9 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
     this.running = true;
     this.paused = false;
+
+    this.detection?.start();
+
     this.emit('command:started');
 
     // Start tick loop (1 second interval). Catch any tick error so a single bad tick
@@ -646,6 +730,9 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       clearInterval(this.tickInterval);
       this.tickInterval = null;
     }
+
+    this.detection?.stop();
+
     this.emit('command:stopped');
   }
 
@@ -1132,6 +1219,8 @@ export interface Tempest {
   workflow: WorkflowOrchestrator;
   // Governance (defensive pivot)
   governance?: GovernanceStack;
+  // Detection engine (Phase 2)
+  detection?: DetectionEngine;
 }
 
 // =============================================================================
@@ -1177,6 +1266,8 @@ export function createTempest(config: TempestConfig): Tempest {
     workflow: command.workflow,
     // Governance (defensive pivot)
     governance: command.governance,
+    // Detection engine (Phase 2)
+    detection: command.detection,
   };
 }
 
@@ -1314,10 +1405,10 @@ export function getBanner(): string {
    ░         ░   ░      ░   ░░          ░   ░  ░  ░    ░
              ░  ░       ░               ░  ░      ░
 
-  T3MP3ST - Tactical Execution Multi-agent Platform
-            for Elite Security Testing
+  T3MP3ST BLU3H4T - Autonomous Blue Team
+                    Defense Platform
 
-  Multi-Agent Red Team / Penetration Testing Framework
+  Governance-First Multi-Agent Defensive Security
 `;
 }
 

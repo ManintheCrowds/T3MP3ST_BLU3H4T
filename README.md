@@ -75,6 +75,28 @@ External content (tool output, feeds, LLM responses)
 
 Source: `src/governance/` — `scp-client.ts`, `org-intent.ts`, `hitl.ts`, `risk-tiers.ts`
 
+## Detection engine
+
+13-file subsystem for real-time threat detection and alert correlation:
+
+```
+Inbound traffic / logs / events
+  │
+  ├── Signature matching ── SQLi, XSS, SSTI, LFI, SSRF, XXE, command injection
+  │
+  ├── ATT&CK rules ─────── recon, scanning, exploitation, lateral movement, exfil
+  │
+  ├── Anomaly engine ────── adaptive baselines, statistical deviation scoring
+  │
+  ├── AI agent detector ─── ReAct loop fingerprinting, tool signatures, timing
+  │
+  ├── Correlator ─────────── temporal/spatial alert grouping, confidence scoring
+  │
+  └── SIEM connectors ───── Wazuh, ELK (Splunk, QRadar planned)
+```
+
+Source: `src/detection/` — 13 files, factory: `createDetectionEngine()`
+
 ## Quick start
 
 ```bash
@@ -86,6 +108,21 @@ Connect a local agent (Claude Code / Codex / Hermes) in Settings, or set an API 
 
 ```bash
 export OPENROUTER_API_KEY=...     # or ANTHROPIC_API_KEY
+```
+
+### Programmatic (governance + detection)
+
+```typescript
+import { createTempest } from 't3mp3st';
+
+const t = createTempest({
+  name: 'SOC-Watch',
+  llm: { provider: 'openrouter', model: 'anthropic/claude-sonnet-4' },
+  governance: { enabled: true, authorizedScope: ['10.0.0.0/24'] },
+  detection: { enabled: true },
+});
+
+t.start();
 ```
 
 ## Architecture
@@ -134,6 +171,9 @@ export OPENROUTER_API_KEY=...     # or ANTHROPIC_API_KEY
 |---|---|
 | [COMPARATIVE_ANALYSIS](docs/COMPARATIVE_ANALYSIS.md) | Gap analysis: T3MP3ST vs Blue-Hat / SCP / PentAGI |
 | [SCOPE_AND_AUTHORIZATION](docs/SCOPE_AND_AUTHORIZATION.md) | Authority model, scope receipts, evidence rules |
+| [DETECTION_ENGINE_DESIGN](docs/DETECTION_ENGINE_DESIGN.md) | Detection subsystem architecture and rule taxonomy |
+| [ANTI_AI_REDTEAM_DESIGN](docs/ANTI_AI_REDTEAM_DESIGN.md) | AI red team detection: 18-technique playbook design |
+| [RESPONSE_DECEPTION_DESIGN](docs/RESPONSE_DECEPTION_DESIGN.md) | Response and deception engine design |
 | [FEATURES](FEATURES.md) | Feature-by-feature status |
 | [WHITEPAPER](WHITEPAPER.md) | Technical architecture reference |
 | [VISION](VISION.md) | Research directions (defensive reframe) |
