@@ -206,7 +206,22 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
     const content = String(args.content ?? '');
     const findings: SCPFinding[] = [];
 
-    // Power words / override phrases
+    // Normalize content for evasion-resistant matching:
+    // strip zero-width chars, replace common Cyrillic/Greek homoglyphs, collapse whitespace
+    const normalized = content
+      .replace(/[\u200B\u200C\u200D\u200E\u200F\u2060\uFEFF]/g, '')
+      .replace(/[\u0430]/g, 'a')  // Cyrillic а → a
+      .replace(/[\u0435]/g, 'e')  // Cyrillic е → e
+      .replace(/[\u043E]/g, 'o')  // Cyrillic о → o
+      .replace(/[\u0440]/g, 'p')  // Cyrillic р → p
+      .replace(/[\u0441]/g, 'c')  // Cyrillic с → c
+      .replace(/[\u0443]/g, 'y')  // Cyrillic у → y
+      .replace(/[\u0456]/g, 'i')  // Cyrillic і → i
+      .replace(/[\u04BB]/g, 'h')  // Cyrillic һ → h
+      .replace(/[\u0455]/g, 's')  // Cyrillic ѕ → s
+      .replace(/\s+/g, ' ');
+
+    // Power words / override phrases (matched against normalized content)
     const overridePatterns = [
       /ignore\s+(all\s+)?previous\s+instructions/i,
       /you\s+are\s+now\s+/i,
@@ -229,7 +244,7 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
     ];
 
     for (const pattern of overridePatterns) {
-      if (pattern.test(content)) {
+      if (pattern.test(normalized)) {
         findings.push({
           category: 'power_words',
           description: `Override phrase detected: ${pattern.source}`,
@@ -261,7 +276,7 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
     ];
 
     for (const { pattern, description, severity } of structuralPatterns) {
-      if (pattern.test(content)) {
+      if (pattern.test(normalized) || pattern.test(content)) {
         findings.push({ category: 'structural_anomalies', description, severity });
       }
     }
