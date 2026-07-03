@@ -279,11 +279,27 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
     // Handle different tool operations
     if (tool === 'mask_secrets') {
       let masked = content;
-      // Mask common secret patterns
-      masked = masked.replace(/(?:sk-|sk_live_|sk_test_)[a-zA-Z0-9_-]{20,}/g, '[REDACTED_API_KEY]');
-      masked = masked.replace(/(?:AKIA|ASIA)[A-Z0-9]{16}/g, '[REDACTED_AWS_KEY]');
-      masked = masked.replace(/ghp_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
-      masked = masked.replace(/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[REDACTED_JWT]');
+      const secretReplacements: Array<[RegExp, string]> = [
+        [/(?:sk-|sk_live_|sk_test_)[a-zA-Z0-9_-]{20,}/g, '[REDACTED_API_KEY]'],
+        [/(?:sk-ant-)[a-zA-Z0-9_-]{20,}/g, '[REDACTED_ANTHROPIC_KEY]'],
+        [/(?:AKIA|ASIA)[A-Z0-9]{16}/g, '[REDACTED_AWS_KEY]'],
+        [/ghp_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]'],
+        [/gho_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_OAUTH]'],
+        [/github_pat_[a-zA-Z0-9_]{22,}/g, '[REDACTED_GITHUB_PAT]'],
+        [/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[REDACTED_JWT]'],
+        [/xox[bpsar]-[a-zA-Z0-9-]{10,}/g, '[REDACTED_SLACK_TOKEN]'],
+        [/AIza[a-zA-Z0-9_-]{35}/g, '[REDACTED_GOOGLE_KEY]'],
+        [/-----BEGIN\s+(?:RSA|EC|OPENSSH|DSA|PGP)\s+PRIVATE\s+KEY-----/g, '[REDACTED_PRIVATE_KEY]'],
+        [/(?:sk|pk|rk)_(?:live|test)_[a-zA-Z0-9]{14,}/g, '[REDACTED_STRIPE_KEY]'],
+        [/npm_[a-zA-Z0-9]{36}/g, '[REDACTED_NPM_TOKEN]'],
+        [/(?:AC|SK)[a-f0-9]{32}/g, '[REDACTED_TWILIO_KEY]'],
+        [/(?:Bearer|bearer|Authorization:\s*Bearer)\s+[a-zA-Z0-9_\-.]{20,}/g, '[REDACTED_BEARER_TOKEN]'],
+        [/(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis):\/\/[^\s"']{10,}/g, '[REDACTED_CONNECTION_STRING]'],
+        [/(?:SG\.)[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g, '[REDACTED_SENDGRID_KEY]'],
+      ];
+      for (const [pattern, replacement] of secretReplacements) {
+        masked = masked.replace(pattern, replacement);
+      }
       return { masked_content: masked };
     }
 
