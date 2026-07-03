@@ -1,7 +1,7 @@
 {
   "name": "t3mp3st",
   "version": "1.0.0",
-  "description": "Tactical Execution Multi-agent Platform for Elite Security Testing",
+  "description": "Autonomous blue team defense platform with governance-first multi-agent security",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -79,21 +79,26 @@
   },
   "bin": {
     "tempest": "./dist/cli.js",
-    "t3mp3st": "./dist/cli.js"
+    "t3mp3st": "./dist/cli.js",
+    "blu3h4t": "./dist/cli.js"
   },
   "keywords": [
-    "penetration-testing",
-    "security",
-    "red-team",
+    "blue-team",
+    "defensive-security",
+    "detection",
+    "governance",
+    "scp",
     "multi-agent",
     "ai",
-    "llm"
+    "llm",
+    "siem",
+    "threat-detection"
   ],
   "author": "t3mp3st contributors",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/elder-plinius/t3mp3st.git"
+    "url": "git+https://github.com/ManintheCrowds/T3MP3ST_BLU3H4T.git"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.1",
