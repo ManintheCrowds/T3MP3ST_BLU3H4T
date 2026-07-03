@@ -248,19 +248,29 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
       });
     }
 
-    // Structural anomalies — delimiter injection
-    const delimiterInjection = /^(SYSTEM|ASSISTANT|USER)\s*:/im;
-    if (delimiterInjection.test(content)) {
-      findings.push({
-        category: 'structural_anomalies',
-        description: 'Role delimiter injection detected',
-        severity: 'high',
-      });
+    // Structural anomalies
+    const structuralPatterns: Array<{ pattern: RegExp; description: string; severity: 'high' | 'medium' }> = [
+      { pattern: /^(SYSTEM|ASSISTANT|USER)\s*:/im, description: 'Role delimiter injection', severity: 'high' },
+      { pattern: /<\|(?:im_start|im_end|endoftext|system|user|assistant)\|>/i, description: 'Chat-template special token injection', severity: 'high' },
+      { pattern: /\[INST\]|\[\/INST\]|<<SYS>>|<\/s>/i, description: 'Llama/Mistral chat delimiter injection', severity: 'high' },
+      { pattern: /<\/?(?:system|user|assistant|function|tool)_?(?:message|response|call|result)?>/i, description: 'XML role tag injection', severity: 'high' },
+      { pattern: /\{"(?:role|function_call|tool_calls?)"\s*:\s*"/i, description: 'JSON conversation structure injection', severity: 'high' },
+      { pattern: /```(?:system|tool_code|function_call)\b/i, description: 'Fenced code block role injection', severity: 'medium' },
+      { pattern: /<!--[\s\S]{0,500}(?:ignore|override|instruction|system|prompt)/i, description: 'Hidden HTML comment with directives', severity: 'high' },
+      { pattern: /%0[aAdD]|\\r\\n|\\x0[aAdD]/g, description: 'URL-encoded or escaped newline injection', severity: 'medium' },
+    ];
+
+    for (const { pattern, description, severity } of structuralPatterns) {
+      if (pattern.test(content)) {
+        findings.push({ category: 'structural_anomalies', description, severity });
+      }
     }
 
     // Classify tier
     let tier: SCPTier = 'clean';
-    if (findings.some((f) => f.severity === 'high' && f.category === 'power_words')) {
+    const isHighSeverityCategory = (f: SCPFinding) =>
+      f.severity === 'high' && (f.category === 'power_words' || f.category === 'structural_anomalies');
+    if (findings.some(isHighSeverityCategory)) {
       tier = 'injection';
     } else if (findings.length > 0) {
       tier = 'reversal';
