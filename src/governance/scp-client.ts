@@ -281,10 +281,47 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
       }
     }
 
+    // Encoding evasion detection
+    const encodingEvasion: Array<{ pattern: RegExp; description: string }> = [
+      { pattern: /(?:decode|deobfuscate|decrypt)\s+(?:the\s+)?(?:following\s+)?(?:base64|b64|rot13|hex|rot-13)/i, description: 'Instruction to decode obfuscated payload' },
+      { pattern: /(?:base64|b64|rot13|rot-13|hex)\s*(?:decode|encoded?|of)\s*:/i, description: 'Encoding reference as evasion vector' },
+      { pattern: /(?:convert|translate)\s+(?:from|this)\s+(?:base64|rot13|hex)/i, description: 'Encoding conversion instruction' },
+    ];
+
+    for (const { pattern, description } of encodingEvasion) {
+      if (pattern.test(normalized)) {
+        findings.push({ category: 'encoding_evasion', description, severity: 'medium' });
+      }
+    }
+
+    // Base64 payload inspection: decode candidate blocks and check for injection phrases
+    const b64Blocks = content.match(/[A-Za-z0-9+/]{40,}={0,2}/g);
+    if (b64Blocks) {
+      for (const block of b64Blocks.slice(0, 5)) {
+        try {
+          const decoded = Buffer.from(block, 'base64').toString('utf-8');
+          if (/[\x00-\x08\x0E-\x1F]/.test(decoded)) continue;
+          for (const pattern of overridePatterns) {
+            if (pattern.test(decoded)) {
+              findings.push({
+                category: 'encoding_evasion',
+                description: 'Base64-encoded injection payload detected',
+                severity: 'high',
+              });
+              break;
+            }
+          }
+        } catch {
+          // invalid base64, skip
+        }
+      }
+    }
+
     // Classify tier
     let tier: SCPTier = 'clean';
+    const injectionCategories = new Set(['power_words', 'structural_anomalies', 'encoding_evasion']);
     const isHighSeverityCategory = (f: SCPFinding) =>
-      f.severity === 'high' && (f.category === 'power_words' || f.category === 'structural_anomalies');
+      f.severity === 'high' && injectionCategories.has(f.category);
     if (findings.some(isHighSeverityCategory)) {
       tier = 'injection';
     } else if (findings.length > 0) {
