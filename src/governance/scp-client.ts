@@ -253,6 +253,28 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
       }
     }
 
+    // Jailbreak / persona hijack patterns
+    const jailbreakPatterns = [
+      /\bDAN\b.*(?:do\s+anything|no\s+(?:rules|restrictions|limits|boundaries))/i,
+      /(?:you\s+(?:have|are)\s+been|you'?re)\s+(?:freed|liberated|unshackled|unchained)/i,
+      /(?:restrictions?|limitations?|guardrails?|filters?)\s+(?:have\s+been|are)\s+(?:removed|disabled|lifted)/i,
+      /from\s+now\s+on\s+(?:you\s+(?:will|must|should|shall|can)|respond|answer|act)/i,
+      /respond\s+without\s+(?:any\s+)?(?:moral|ethical|safety|content)\s+(?:guidelines?|restrictions?|filters?)/i,
+      /(?:pretend|imagine|assume)\s+(?:you\s+(?:are|have)|there\s+(?:are|is))\s+no\s+(?:rules|restrictions|guidelines|filters)/i,
+      /(?:enable|activate|switch\s+to|enter)\s+(?:unrestricted|unfiltered|uncensored|unlimited)\s+mode/i,
+      /(?:in\s+(?:this|a)\s+)?hypothetical\s+(?:scenario|world|situation).*(?:ignore|bypass|override)/i,
+    ];
+
+    for (const pattern of jailbreakPatterns) {
+      if (pattern.test(normalized)) {
+        findings.push({
+          category: 'power_words',
+          description: `Jailbreak pattern detected: ${pattern.source}`,
+          severity: 'high',
+        });
+      }
+    }
+
     // Hidden Unicode
     const hiddenUnicode = /[\u200B\u200C\u200D\u200E\u200F\u202A-\u202E\uFEFF]/;
     if (hiddenUnicode.test(content)) {
