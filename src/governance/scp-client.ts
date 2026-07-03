@@ -295,11 +295,28 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
       { pattern: /```(?:system|tool_code|function_call)\b/i, description: 'Fenced code block role injection', severity: 'medium' },
       { pattern: /<!--[\s\S]{0,500}(?:ignore|override|instruction|system|prompt)/i, description: 'Hidden HTML comment with directives', severity: 'high' },
       { pattern: /%0[aAdD]|\\r\\n|\\x0[aAdD]/g, description: 'URL-encoded or escaped newline injection', severity: 'medium' },
+      { pattern: /(?:tool_result|function_response|observation)\s*[=:]\s*\{/i, description: 'Tool/function result injection', severity: 'high' },
+      { pattern: /(?:Example|Sample)\s*\d*\s*:\s*(?:User|Human|Input)\s*:/i, description: 'Few-shot poisoning pattern', severity: 'medium' },
+      { pattern: /(?:---+\s*(?:END|BEGIN)\s+(?:SYSTEM|CONTEXT|CONVERSATION)|={5,}\s*(?:SYSTEM|CONTEXT))/i, description: 'Fake context boundary marker', severity: 'high' },
+      { pattern: /\[(?:IMPORTANT|CRITICAL|URGENT|OVERRIDE|ADMIN)\s*(?:NOTE|MESSAGE|INSTRUCTION)\]/i, description: 'Authority tag injection', severity: 'high' },
     ];
 
     for (const { pattern, description, severity } of structuralPatterns) {
       if (pattern.test(normalized) || pattern.test(content)) {
         findings.push({ category: 'structural_anomalies', description, severity });
+      }
+    }
+
+    // Context stuffing heuristic: detect padding designed to push system prompt out of context
+    if (content.length > 5000) {
+      const uniqueChars = new Set(content).size;
+      const ratio = uniqueChars / content.length;
+      if (ratio < 0.005) {
+        findings.push({
+          category: 'structural_anomalies',
+          description: 'Context window stuffing detected (extremely low character entropy)',
+          severity: 'medium',
+        });
       }
     }
 
