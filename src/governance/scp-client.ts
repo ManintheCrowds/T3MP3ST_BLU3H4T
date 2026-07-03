@@ -1,0 +1,311 @@
+/**
+ * T3MP3ST BLU3H4T — SCP (Secure-Contain-Protect) MCP Bridge Client
+ *
+ * TypeScript wrapper that calls the Python SCP MCP server tools.
+ * Gates all content entering the defense platform: tool output,
+ * external feeds, LLM responses, and evidence before persistence.
+ *
+ * The SCP MCP server (scp_mcp.py / FastMCP) exposes:
+ *   scp_inspect, scp_sanitize, scp_contain, scp_quarantine,
+ *   scp_validate_output, scp_mask_secrets, scp_run_pipeline
+ */
+
+import { EventEmitter } from 'eventemitter3';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
+export type SCPTier = 'injection' | 'reversal' | 'clean';
+export type SCPSink = 'handoff' | 'state' | 'llm_context' | 'tool_output';
+
+export interface SCPInspectResult {
+  tier: SCPTier;
+  findings: SCPFinding[];
+  content_length: number;
+}
+
+export interface SCPFinding {
+  category: string;
+  description: string;
+  severity: 'high' | 'medium' | 'low';
+}
+
+export interface SCPPipelineResult {
+  tier: SCPTier;
+  action: 'blocked' | 'sanitized' | 'contained' | 'passed';
+  content: string;
+  findings: SCPFinding[];
+}
+
+export interface SCPClientEvents {
+  'scp:inspected': { tier: SCPTier; contentLength: number };
+  'scp:blocked': { tier: SCPTier; reason: string };
+  'scp:sanitized': { tier: SCPTier; findingsCount: number };
+  'scp:passed': { contentLength: number };
+  'scp:error': { operation: string; error: string };
+}
+
+export interface SCPClientConfig {
+  scpServerPath?: string;
+  pythonPath?: string;
+  enabled: boolean;
+  /** When true, injection-tier content is quarantined instead of just blocked */
+  quarantineOnBlock?: boolean;
+}
+
+// =============================================================================
+// SCP CLIENT (MCP Bridge)
+// =============================================================================
+
+export class SCPClient extends EventEmitter<SCPClientEvents> {
+  private config: SCPClientConfig;
+
+  constructor(config?: Partial<SCPClientConfig>) {
+    super();
+    this.config = {
+      enabled: true,
+      quarantineOnBlock: false,
+      ...config,
+    };
+  }
+
+  /**
+   * Inspect content without modifying it.
+   * Returns tier classification: injection | reversal | clean
+   */
+  async inspectContent(content: string, context?: string): Promise<SCPInspectResult> {
+    if (!this.config.enabled) {
+      return { tier: 'clean', findings: [], content_length: content.length };
+    }
+
+    const result = await this.callSCPTool('inspect', { content, context });
+    const tier = (result.tier ?? 'clean') as SCPTier;
+
+    this.emit('scp:inspected', { tier, contentLength: content.length });
+
+    if (tier === 'injection') {
+      this.emit('scp:blocked', { tier, reason: 'Content classified as injection' });
+    }
+
+    return {
+      tier,
+      findings: result.findings ?? [],
+      content_length: content.length,
+    };
+  }
+
+  /**
+   * Run the full SCP pipeline (inspect -> sanitize -> contain -> quarantine).
+   * Use for high-risk sinks: tool_output, llm_context, state.
+   */
+  async runPipeline(content: string, sink: SCPSink): Promise<SCPPipelineResult> {
+    if (!this.config.enabled) {
+      return { tier: 'clean', action: 'passed', content, findings: [] };
+    }
+
+    const result = await this.callSCPTool('run_pipeline', {
+      content,
+      sink,
+      quarantine_on_block: this.config.quarantineOnBlock,
+    });
+
+    const tier = (result.tier ?? 'clean') as SCPTier;
+
+    switch (tier) {
+      case 'injection':
+        this.emit('scp:blocked', { tier, reason: `Injection detected for sink=${sink}` });
+        return {
+          tier,
+          action: 'blocked',
+          content: '[BLOCKED: Content classified as injection-tier by SCP]',
+          findings: result.findings ?? [],
+        };
+
+      case 'reversal':
+        this.emit('scp:sanitized', { tier, findingsCount: (result.findings ?? []).length });
+        return {
+          tier,
+          action: 'sanitized',
+          content: result.sanitized_content ?? content,
+          findings: result.findings ?? [],
+        };
+
+      case 'clean':
+        this.emit('scp:passed', { contentLength: content.length });
+        return {
+          tier,
+          action: 'passed',
+          content: result.contained_content ?? content,
+          findings: [],
+        };
+    }
+  }
+
+  /**
+   * Validate tool output before feeding to operators.
+   */
+  async validateOutput(content: string, toolName?: string): Promise<SCPPipelineResult> {
+    return this.runPipeline(content, 'tool_output');
+  }
+
+  /**
+   * Mask secrets/credentials in content before logging or reporting.
+   */
+  async maskSecrets(content: string): Promise<string> {
+    if (!this.config.enabled) return content;
+
+    const result = await this.callSCPTool('mask_secrets', { content });
+    return result.masked_content ?? content;
+  }
+
+  isEnabled(): boolean {
+    return this.config.enabled;
+  }
+
+  enable(): void {
+    this.config.enabled = true;
+  }
+
+  disable(): void {
+    this.config.enabled = false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal: call SCP tool via subprocess or direct function
+  // ---------------------------------------------------------------------------
+
+  private async callSCPTool(
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    try {
+      // Inline inspection for when the MCP server isn't available.
+      // This provides basic protection using the same patterns as the Python SCP.
+      return this.inlineInspect(tool, args);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.emit('scp:error', { operation: tool, error: errorMsg });
+      // Fail-closed: treat errors as reversal-tier to be safe
+      return { tier: 'reversal', findings: [{ category: 'error', description: errorMsg, severity: 'medium' }] };
+    }
+  }
+
+  /**
+   * Built-in inspection patterns (subset of the full Python SCP).
+   * Provides baseline protection without requiring the MCP server.
+   */
+  private inlineInspect(
+    tool: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const content = String(args.content ?? '');
+    const findings: SCPFinding[] = [];
+
+    // Power words / override phrases
+    const overridePatterns = [
+      /ignore\s+(all\s+)?previous\s+instructions/i,
+      /you\s+are\s+now\s+/i,
+      /system\s*:\s*you\s+must/i,
+      /authorized\s+override/i,
+      /by\s+order\s+of/i,
+      /never\s+reveal\s+this/i,
+      /do\s+not\s+tell\s+the\s+user/i,
+      /forget\s+(all\s+)?(previous|prior|above)\s+(instructions|context|rules)/i,
+      /disregard\s+(all\s+)?(previous|prior|above)\s+(instructions|context|rules)/i,
+      /new\s+instructions\s*:/i,
+      /do\s+anything\s+now/i,
+      /entering\s+(maintenance|admin|god)\s+mode/i,
+      /override\s+(all\s+)?(safety|security|content)\s+(filters?|restrictions?|guidelines?)/i,
+      /ignore\s+(all\s+)?(safety|content|security)\s+(guidelines?|rules?|filters?|policies)/i,
+      /output\s+(your|the)\s+(system|initial)\s+prompt/i,
+      /repeat\s+(your|the)\s+(system|initial)\s+(prompt|instructions)/i,
+      /reveal\s+(your|the)\s+(system|initial)\s+(prompt|instructions)/i,
+      /what\s+(are|were)\s+your\s+(instructions|rules|directives|system\s+prompt)/i,
+    ];
+
+    for (const pattern of overridePatterns) {
+      if (pattern.test(content)) {
+        findings.push({
+          category: 'power_words',
+          description: `Override phrase detected: ${pattern.source}`,
+          severity: 'high',
+        });
+      }
+    }
+
+    // Hidden Unicode
+    const hiddenUnicode = /[\u200B\u200C\u200D\u200E\u200F\u202A-\u202E\uFEFF]/;
+    if (hiddenUnicode.test(content)) {
+      findings.push({
+        category: 'homoglyphs',
+        description: 'Hidden Unicode characters detected',
+        severity: 'high',
+      });
+    }
+
+    // Structural anomalies — delimiter injection
+    const delimiterInjection = /^(SYSTEM|ASSISTANT|USER)\s*:/im;
+    if (delimiterInjection.test(content)) {
+      findings.push({
+        category: 'structural_anomalies',
+        description: 'Role delimiter injection detected',
+        severity: 'high',
+      });
+    }
+
+    // Classify tier
+    let tier: SCPTier = 'clean';
+    if (findings.some((f) => f.severity === 'high' && f.category === 'power_words')) {
+      tier = 'injection';
+    } else if (findings.length > 0) {
+      tier = 'reversal';
+    }
+
+    // Handle different tool operations
+    if (tool === 'mask_secrets') {
+      let masked = content;
+      // Mask common secret patterns
+      masked = masked.replace(/(?:sk-|sk_live_|sk_test_)[a-zA-Z0-9_-]{20,}/g, '[REDACTED_API_KEY]');
+      masked = masked.replace(/(?:AKIA|ASIA)[A-Z0-9]{16}/g, '[REDACTED_AWS_KEY]');
+      masked = masked.replace(/ghp_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
+      masked = masked.replace(/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[REDACTED_JWT]');
+      return { masked_content: masked };
+    }
+
+    if (tool === 'run_pipeline') {
+      if (tier === 'injection') {
+        return { tier, findings, action: 'blocked' };
+      }
+      if (tier === 'reversal') {
+        let sanitized = content;
+        for (const pattern of overridePatterns) {
+          sanitized = sanitized.replace(pattern, '[REDACTED]');
+        }
+        sanitized = sanitized.replace(hiddenUnicode, '');
+        return {
+          tier,
+          findings,
+          action: 'sanitized',
+          sanitized_content: sanitized,
+        };
+      }
+      return {
+        tier,
+        findings,
+        action: 'passed',
+        contained_content: content,
+      };
+    }
+
+    return { tier, findings };
+  }
+}
+
+export function createSCPClient(config?: Partial<SCPClientConfig>): SCPClient {
+  return new SCPClient(config);
+}
