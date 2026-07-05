@@ -1042,7 +1042,7 @@ Source: `src/resources/ai-redteam-playbook.ts`, `docs/ANTI_AI_REDTEAM_DESIGN.md`
 
 ### P0 - Critical (Next Release)
 1. [ ] Detection engine: expand SIEM connectors (Splunk, QRadar)
-2. [ ] Governance test coverage: SCP pipeline + HITL gate integration tests
+2. [x] Governance test coverage: SCP pipeline + HITL gate integration tests
 3. [ ] Full API endpoint coverage for operators/targets/missions
 4. [ ] PDF report generation
 5. [ ] Scanner import (Nmap, Nuclei)

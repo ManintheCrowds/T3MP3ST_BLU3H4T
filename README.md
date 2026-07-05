@@ -109,6 +109,17 @@ npm install
 npm run server        # War Room → http://127.0.0.1:3333/ui/
 ```
 
+Governance is **enabled by default** on the War Room server (SCP, org-intent, HITL, risk tiers). Optional env vars:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `T3MP3ST_GOVERNANCE` | on | Set to `0` to disable governance on the server path |
+| `ORG_INTENT_PATH` | built-in defaults | Path to org-intent policy JSON |
+| `T3MP3ST_AUTHORIZED_SCOPE` | none | Comma-separated authorized targets (e.g. `10.0.0.0/24,.example.com`) |
+| `T3MP3ST_HITL_AUTO_LOW` | on | Set to `0` to require HITL for low-tier tools |
+
+For production deployments, set `T3MP3ST_AUTHORIZED_SCOPE` so med-tier tools can scope-check authorized targets (empty scope fails closed for active probes).
+
 Connect a local agent (Claude Code / Codex / Hermes) in Settings, or set an API key:
 
 ```bash

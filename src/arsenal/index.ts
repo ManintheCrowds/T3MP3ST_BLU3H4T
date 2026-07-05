@@ -164,11 +164,16 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
           this.emit('tool:scp_blocked', { tool, tier: scpResult.tier });
           return { success: false, error: `SCP: content blocked (tier=${scpResult.tier})` };
         }
-        if (scpResult.action === 'sanitized' && scpResult.sanitized) {
-          this.emit('tool:scp_sanitized', { tool, tier: scpResult.tier });
-          const sanitizedData = JSON.parse(scpResult.sanitized);
-          if (result.data) result.data = sanitizedData;
-          else if (result.output) result.output = sanitizedData;
+        if (scpResult.action === 'sanitized' && scpResult.content) {
+          try {
+            const sanitizedData = JSON.parse(scpResult.content);
+            this.emit('tool:scp_sanitized', { tool, tier: scpResult.tier });
+            if (result.data) result.data = sanitizedData;
+            else if (result.output) result.output = sanitizedData;
+          } catch {
+            this.emit('tool:scp_blocked', { tool, tier: scpResult.tier });
+            return { success: false, error: 'SCP: sanitized content parse failed (fail-closed)' };
+          }
         }
       }
 

@@ -314,6 +314,18 @@ function getTempestCommand(): TempestCommand | null {
   return tempestCommand;
 }
 
+function buildServerGovernanceConfig(): import('./types/index.js').TempestConfig['governance'] | undefined {
+  if (process.env.T3MP3ST_GOVERNANCE === '0') {
+    return undefined;
+  }
+  return {
+    enabled: true,
+    orgIntentPath: process.env.ORG_INTENT_PATH,
+    authorizedScope: process.env.T3MP3ST_AUTHORIZED_SCOPE?.split(',').map(s => s.trim()).filter(Boolean),
+    autoApproveLow: process.env.T3MP3ST_HITL_AUTO_LOW !== '0',
+  };
+}
+
 function createTempestCommandInstance(missionName: string, apiKey: string | undefined, provider: string, model: string): TempestCommand {
   // Tear down previous instance
   if (tempestCommand) {
@@ -329,7 +341,12 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
       maxTokens: 4096,
       temperature: 0.7,
     },
+    governance: buildServerGovernanceConfig(),
   });
+
+  if (tempestCommand.governance) {
+    console.log('[T3MP3ST] Governance stack enabled (SCP, org-intent, HITL, risk tiers)');
+  }
 
   // Wire all events to SSE broadcast
   tempestCommand.connectBroadcast(broadcastEvent);

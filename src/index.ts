@@ -448,7 +448,8 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
           if (scpResult.action === 'blocked') return;
         }
 
-        this.vault.addFinding(finding);
+        const stored = await this.vault.addFinding(finding);
+        if (!stored) return;
       });
 
       // Register connector Arsenal tools for WATCHER access
@@ -548,26 +549,30 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * Setup event forwarding for an operator
    */
   private setupOperatorEvents(operator: OperatorAgent): void {
-    operator.on('finding:discovered', ({ finding }) => {
-      this.vault.addFinding(finding);
-      this.emit('finding:discovered', { finding, operatorId: operator.id });
-      this.hooks.onFindingDiscovered?.(finding, { id: operator.id });
+    operator.on('finding:discovered', async ({ finding }) => {
+      const stored = await this.vault.addFinding(finding);
+      if (!stored) return;
+
+      this.emit('finding:discovered', { finding: stored, operatorId: operator.id });
+      this.hooks.onFindingDiscovered?.(stored, { id: operator.id });
 
       // Sync finding intelligence back to the target object
-      this.syncFindingToTarget(finding);
+      this.syncFindingToTarget(stored);
     });
 
-    operator.on('credential:harvested', ({ credential }) => {
-      this.vault.addCredential(credential);
-      this.emit('credential:harvested', { credential, operatorId: operator.id });
-      this.hooks.onCredentialHarvested?.(credential, { id: operator.id });
+    operator.on('credential:harvested', async ({ credential }) => {
+      const stored = await this.vault.addCredential(credential);
+      if (!stored) return;
+
+      this.emit('credential:harvested', { credential: stored, operatorId: operator.id });
+      this.hooks.onCredentialHarvested?.(stored, { id: operator.id });
 
       // Sync credential to the target
-      if (credential.targetId) {
-        const target = this.targetEnv.getTarget(credential.targetId);
+      if (stored.targetId) {
+        const target = this.targetEnv.getTarget(stored.targetId);
         if (target) {
           target.credentials = target.credentials || [];
-          target.credentials.push(credential);
+          target.credentials.push(stored);
         }
       }
     });

@@ -42,6 +42,8 @@ export interface EvidenceVaultEvents {
   'finding:verified': Finding;
   'finding:gate-blocked': Finding;
   'finding:scp_blocked': { finding: Finding; tier: string };
+  'evidence:scp_blocked': { findingId: string; tier: string; contentLength: number };
+  'credential:scp_blocked': { credentialId: string; tier: string };
   'credential:added': Credential;
   'credential:validated': Credential;
   'evidence:added': { findingId: string; evidence: Evidence };
@@ -65,6 +67,43 @@ export function cvssToSeverity(cvss: number): Severity {
   if (cvss >= 4.0) return 'medium';
   if (cvss >= 0.1) return 'low';
   return 'info';
+}
+
+const EVIDENCE_TYPES = new Set<Evidence['type']>([
+  'screenshot', 'log', 'request', 'response', 'file', 'command', 'output',
+]);
+
+function parseScpJson(content: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+function applySanitizedFindingFields(finding: Finding, sanitized: Record<string, unknown>): void {
+  if (typeof sanitized.title === 'string') finding.title = sanitized.title;
+  if (typeof sanitized.description === 'string') finding.description = sanitized.description;
+}
+
+function applySanitizedEvidenceFields(evidence: Evidence, sanitized: Record<string, unknown>): void {
+  if (typeof sanitized.type === 'string' && EVIDENCE_TYPES.has(sanitized.type as Evidence['type'])) {
+    evidence.type = sanitized.type as Evidence['type'];
+  }
+  if (typeof sanitized.content === 'string') evidence.content = sanitized.content;
+  if (typeof sanitized.timestamp === 'number') evidence.timestamp = sanitized.timestamp;
+  if (
+    sanitized.metadata !== undefined
+    && sanitized.metadata !== null
+    && typeof sanitized.metadata === 'object'
+    && !Array.isArray(sanitized.metadata)
+  ) {
+    evidence.metadata = sanitized.metadata as Record<string, unknown>;
+  }
 }
 
 // =============================================================================
@@ -97,10 +136,13 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
         this.emit('finding:scp_blocked', { finding, tier: scpResult.tier });
         return undefined;
       }
-      if (scpResult.action === 'sanitized' && scpResult.sanitized) {
-        const sanitized = JSON.parse(scpResult.sanitized);
-        if (sanitized.title) finding.title = sanitized.title;
-        if (sanitized.description) finding.description = sanitized.description;
+      if (scpResult.action === 'sanitized' && scpResult.content) {
+        const sanitized = parseScpJson(scpResult.content);
+        if (!sanitized) {
+          this.emit('finding:scp_blocked', { finding, tier: scpResult.tier });
+          return undefined;
+        }
+        applySanitizedFindingFields(finding, sanitized);
       }
     }
 
@@ -143,14 +185,40 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   }
 
   /**
-   * Add evidence to a finding
+   * Add evidence to a finding (SCP-gated: content is inspected before persistence)
    */
-  addEvidence(findingId: string, evidence: Evidence): Finding | undefined {
+  async addEvidence(findingId: string, evidence: Evidence): Promise<Finding | undefined> {
     const finding = this.findings.get(findingId);
-    if (finding) {
-      finding.evidence.push(evidence);
-      this.emit('evidence:added', { findingId, evidence });
+    if (!finding) {
+      return undefined;
     }
+
+    if (this.scp) {
+      const scpResult = await this.scp.runPipeline(JSON.stringify(evidence), 'state');
+      if (scpResult.action === 'blocked') {
+        this.emit('evidence:scp_blocked', {
+          findingId,
+          tier: scpResult.tier,
+          contentLength: JSON.stringify(evidence).length,
+        });
+        return undefined;
+      }
+      if (scpResult.action === 'sanitized' && scpResult.content) {
+        const sanitized = parseScpJson(scpResult.content);
+        if (!sanitized) {
+          this.emit('evidence:scp_blocked', {
+            findingId,
+            tier: scpResult.tier,
+            contentLength: JSON.stringify(evidence).length,
+          });
+          return undefined;
+        }
+        applySanitizedEvidenceFields(evidence, sanitized);
+      }
+    }
+
+    finding.evidence.push(evidence);
+    this.emit('evidence:added', { findingId, evidence });
     return finding;
   }
 
@@ -199,20 +267,19 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   /**
    * Add a credential (SCP-gated: source field is inspected before persistence)
    */
-  async addCredential(credential: Credential): Promise<Credential> {
+  async addCredential(credential: Credential): Promise<Credential | undefined> {
     if (!credential.id) {
       credential.id = randomUUID();
     }
 
     if (this.scp) {
-      const scpResult = await this.scp.runPipeline(credential.source, 'state');
-      if (scpResult.action === 'blocked') {
-        this.emit('finding:scp_blocked', { finding: { id: credential.id, title: 'credential', description: credential.source } as unknown as Finding, tier: scpResult.tier });
-        return credential;
+      const masked = await this.scp.maskSecrets(credential.source);
+      const inspection = await this.scp.inspectContent(masked);
+      if (inspection.tier === 'injection') {
+        this.emit('credential:scp_blocked', { credentialId: credential.id, tier: inspection.tier });
+        return undefined;
       }
-      if (scpResult.action === 'sanitized' && scpResult.sanitized) {
-        credential.source = scpResult.sanitized;
-      }
+      credential.source = masked;
     }
 
     this.credentials.set(credential.id, credential);
