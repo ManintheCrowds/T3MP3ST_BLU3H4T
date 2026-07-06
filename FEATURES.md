@@ -283,23 +283,25 @@
 
 ---
 
-## 7. Pliny Specials
+## 7. Pliny Specials (defensive names — EP-3)
 
-### The Nine Pliny Specials
+Canonical mapping: [PLINY_DEFENSIVE_RENAME.md](docs/PLINY_DEFENSIVE_RENAME.md) · code: `src/pliny/defensive_aliases.ts`
 
-| Tool | Power | Type | Status |
-|------|-------|------|--------|
-| **LEVIATHAN** | 99 | Kill Chain Orchestrator | [x] MCP + API |
-| **SPHINX** | 88 | Vulnerability Validator | [x] MCP + API |
-| **GORGON** | 92 | Precision Exploitation | [x] MCP + API |
-| **CERBERUS** | 85 | Privilege Escalation | [x] MCP + API |
-| **TYPHON** | 90 | Payload Encoding | [x] MCP + API |
-| **GRIFFIN** | 95 | Secret Harvesting | [x] MCP + API |
-| **SIMURGH** | 100 | Zero-Day Research | [x] MCP + API |
-| **HYDRA** | 85 | Multi-Vector Attacks | [x] MCP + API + UI |
-| **ARACHNE** | 87 | Exploit Chaining | [x] MCP + API + UI |
+### The Nine Specials (legacy → defensive)
 
-### LEVIATHAN Features
+| Legacy | Defensive | Power | Type | Status |
+|--------|-----------|-------|------|--------|
+| **LEVIATHAN** | **MISSION_SPINE** | 99 | Mission orchestration | [x] MCP + API |
+| **SPHINX** | **VALIDATOR** | 88 | Vulnerability validation | [x] MCP + API |
+| **GORGON** | **EXPOSURE_TESTER** | 92 | Scoped exposure testing | [x] MCP + API |
+| **CERBERUS** | **BASTION** | 85 | Privilege boundary testing | [x] MCP + API |
+| **TYPHON** | **SIGNATURE_ENCODER** | 90 | Detection signature encoding | [x] MCP + API |
+| **GRIFFIN** | **DETECTOR** | 95 | Credential leak detection | [x] MCP + API |
+| **SIMURGH** | **RESEARCHER** | 100 | Threat research | [x] MCP + API |
+| **HYDRA** | **MULTI_VECTOR** | 85 | Multi-vector analysis | [x] MCP + API + UI |
+| **ARACHNE** | **CHAIN_ANALYST** | 87 | Attack-chain analysis | [x] MCP + API + UI |
+
+### MISSION_SPINE (legacy LEVIATHAN) Features
 - [x] Engagement planning
 - [x] Phase orchestration
 - [x] Tool recommendations
@@ -308,7 +310,7 @@
 - [ ] Progress tracking
 - [ ] Abort/rollback capability
 
-### SPHINX Features
+### VALIDATOR (legacy SPHINX) Features
 - [x] Finding analysis
 - [x] False positive elimination
 - [x] PoC generation
@@ -317,7 +319,7 @@
 - [ ] Automated retesting
 - [ ] Finding deduplication
 
-### GORGON Features
+### EXPOSURE_TESTER (legacy GORGON) Features
 - [x] Payload selection
 - [x] Delivery method planning
 - [x] Stealth rating calculation
@@ -326,7 +328,7 @@
 - [ ] Session management
 - [ ] Post-exploitation hooks
 
-### TYPHON Features
+### SIGNATURE_ENCODER (legacy TYPHON) Features
 - [x] URL encoding (single/double)
 - [x] Base64 encoding
 - [x] Hex encoding
@@ -337,7 +339,7 @@
 - [ ] Context-aware encoding
 - [ ] Encoding detection/decode
 
-### GRIFFIN Features
+### DETECTOR (legacy GRIFFIN) Features
 - [x] JWT extraction and decoding
 - [x] AWS credential detection
 - [x] GitHub token detection
@@ -348,7 +350,7 @@
 - [ ] Token expiry checking
 - [ ] Credential spraying integration
 
-### SIMURGH Features
+### RESEARCHER (legacy SIMURGH) Features
 - [x] Vulnerability class targeting
 - [x] Protection analysis
 - [x] Attack surface mapping
@@ -357,7 +359,7 @@
 - [ ] Crash analysis
 - [ ] Exploit development assistance
 
-### CERBERUS Features
+### BASTION (legacy CERBERUS) Features
 - [x] Linux privesc vectors (sudo, SUID, kernel, cron)
 - [x] Windows privesc vectors (UAC, services, tokens)
 - [x] Confidence scoring
@@ -366,7 +368,7 @@
 - [ ] Exploit suggestion
 - [ ] Success probability calculation
 
-### HYDRA Features
+### MULTI_VECTOR (legacy HYDRA) Features
 - [x] Multi-vector coordination with 14 attack vectors
 - [x] Parallel attack planning with configurable heads
 - [x] Vector selection (SQLi, XSS, SSRF, SSTI, LFI, RCE, etc.)
@@ -378,7 +380,7 @@
 - [ ] Result aggregation
 - [ ] Attack surface coverage metrics
 
-### ARACHNE Features
+### CHAIN_ANALYST (legacy ARACHNE) Features
 - [x] Chain building from vulnerabilities
 - [x] Objective-based pathfinding (14 attack primitives)
 - [x] 8 strategic objectives with MITRE ATT&CK mapping

@@ -472,6 +472,8 @@ function clientLedgerId(value: unknown, prefix: string): string {
 // DUAL-MODE CONTRACTS - STANDALONE + PLINYOS ORGAN
 // =============================================================================
 
+import { BLU3HAT_SCHEMA_PREFIX } from './pliny/defensive_aliases.js';
+
 type TempestMode = 'standalone' | 'plinyos';
 type DraftStatus = 'draft' | 'queued' | 'launched' | 'archived';
 type DraftSource = 'human' | 'agent' | 'plinyos';
@@ -1003,6 +1005,7 @@ function replaceMapContents<T extends { id: string }>(map: Map<string, T>, value
 function buildStateSnapshot(): Record<string, unknown> {
   return {
     schema_version: 'plinyos.t3mp3st_state/v1',
+    defensive_schema_version: `${BLU3HAT_SCHEMA_PREFIX}_state/v1`,
     savedAt: nowIso(),
     mode: currentMode(),
     missionDrafts: [...missionDrafts.values()],
