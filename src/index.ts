@@ -456,7 +456,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       if (config.detection.registerArsenalTools !== false) {
         for (const connector of this.detection.connectors) {
           if ('toArsenalTool' in connector) {
-            this.arsenal.register((connector as { toArsenalTool(): import('./types/index.js').CustomTool }).toArsenalTool());
+            this.arsenal.register((connector as { toArsenalTool: () => import('./types/index.js').CustomTool }).toArsenalTool());
           }
         }
       }
