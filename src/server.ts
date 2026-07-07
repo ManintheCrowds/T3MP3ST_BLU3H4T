@@ -137,8 +137,8 @@ const SECRET_PATTERNS: Record<string, { pattern: RegExp; severity: string; provi
   gcp_api_key: { pattern: /AIza[0-9A-Za-z\-_]{35}/g, severity: 'high', provider: 'GCP' },
   github_token: { pattern: /ghp_[A-Za-z0-9]{36}/g, severity: 'critical', provider: 'GitHub' },
   github_oauth: { pattern: /gho_[A-Za-z0-9]{36}/g, severity: 'critical', provider: 'GitHub' },
-  anthropic_api_key: { pattern: /sk-ant-api\d{2}-[A-Za-z0-9_\-]{16,}/g, severity: 'critical', provider: 'Anthropic' },
-  openai_api_key: { pattern: /sk-[A-Za-z0-9_\-]{20,}/g, severity: 'critical', provider: 'OpenAI' },
+  anthropic_api_key: { pattern: /sk-ant-api\d{2}-[A-Za-z0-9_-]{16,}/g, severity: 'critical', provider: 'Anthropic' },
+  openai_api_key: { pattern: /sk-[A-Za-z0-9_-]{20,}/g, severity: 'critical', provider: 'OpenAI' },
   gitlab_token: { pattern: /glpat-[A-Za-z0-9\-_]{20}/g, severity: 'critical', provider: 'GitLab' },
   jwt: { pattern: /eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_.+/=]*/g, severity: 'high', provider: 'JWT' },
   stripe_live: { pattern: /sk_live_[0-9a-zA-Z]{24}/g, severity: 'critical', provider: 'Stripe' },
@@ -381,6 +381,7 @@ interface ParsedCommand {
 }
 
 const SHELL_META = /[|&;$<>`\\]/;
+// eslint-disable-next-line no-control-regex -- intentional shell-injection guard
 const COMMAND_CONTROL = /[\x00-\x1F\x7F-\x9F\u2028\u2029]/;
 
 function parseCommand(command: string): ParsedCommand | { error: string } {

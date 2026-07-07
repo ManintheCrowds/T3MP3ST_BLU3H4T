@@ -11,10 +11,6 @@
  */
 
 import { EventEmitter } from 'eventemitter3';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
-const execFileAsync = promisify(execFile);
 
 // =============================================================================
 // TYPES
@@ -40,6 +36,15 @@ export interface SCPPipelineResult {
   action: 'blocked' | 'sanitized' | 'contained' | 'passed';
   content: string;
   findings: SCPFinding[];
+}
+
+export interface SCPToolResult {
+  tier?: SCPTier;
+  findings?: SCPFinding[];
+  action?: 'blocked' | 'sanitized' | 'contained' | 'passed';
+  sanitized_content?: string;
+  contained_content?: string;
+  masked_content?: string;
 }
 
 export interface SCPClientEvents {
@@ -149,7 +154,7 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
   /**
    * Validate tool output before feeding to operators.
    */
-  async validateOutput(content: string, toolName?: string): Promise<SCPPipelineResult> {
+  async validateOutput(content: string, _toolName?: string): Promise<SCPPipelineResult> {
     return this.runPipeline(content, 'tool_output');
   }
 
@@ -182,7 +187,7 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
   private async callSCPTool(
     tool: string,
     args: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<SCPToolResult> {
     try {
       // Inline inspection for when the MCP server isn't available.
       // This provides basic protection using the same patterns as the Python SCP.
@@ -202,14 +207,20 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
   private inlineInspect(
     tool: string,
     args: Record<string, unknown>,
-  ): Record<string, unknown> {
+  ): SCPToolResult {
     const content = String(args.content ?? '');
     const findings: SCPFinding[] = [];
 
     // Normalize content for evasion-resistant matching:
     // strip zero-width chars, replace common Cyrillic/Greek homoglyphs, collapse whitespace
     const normalized = content
-      .replace(/[\u200B\u200C\u200D\u200E\u200F\u2060\uFEFF]/g, '')
+      .replace(/\u200B/g, '')
+      .replace(/\u200C/g, '')
+      .replace(/\u200D/g, '')
+      .replace(/\u200E/g, '')
+      .replace(/\u200F/g, '')
+      .replace(/\u2060/g, '')
+      .replace(/\uFEFF/g, '')
       .replace(/[\u0430]/g, 'a')  // Cyrillic а → a
       .replace(/[\u0435]/g, 'e')  // Cyrillic е → e
       .replace(/[\u043E]/g, 'o')  // Cyrillic о → o
@@ -368,6 +379,7 @@ export class SCPClient extends EventEmitter<SCPClientEvents> {
       for (const block of b64Blocks.slice(0, 5)) {
         try {
           const decoded = Buffer.from(block, 'base64').toString('utf-8');
+          // eslint-disable-next-line no-control-regex -- reject binary/control bytes in decoded payloads
           if (/[\x00-\x08\x0E-\x1F]/.test(decoded)) continue;
           for (const pattern of overridePatterns) {
             if (pattern.test(decoded)) {

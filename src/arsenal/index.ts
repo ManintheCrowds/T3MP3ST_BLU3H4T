@@ -69,6 +69,7 @@ export interface ArsenalEvents {
   'tool:executed': { tool: CustomTool; result: ToolResult; durationMs: number };
   'tool:error': { tool: CustomTool; error: Error };
   'tool:scp_blocked': { tool: CustomTool; tier: string };
+  'tool:scp_sanitized': { tool: CustomTool; tier: string };
 }
 
 export interface ToolExecution {

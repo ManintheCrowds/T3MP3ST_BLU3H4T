@@ -105,7 +105,6 @@ function patternToDetectionRule(
 export class SignatureMatcher extends EventEmitter<SignatureMatcherEvents> {
   private rules: DetectionRule[] = [];
   private bus?: DetectionBus;
-  private registry?: DetectionRegistry;
 
   /**
    * Compile all payload databases into detection rules.
@@ -211,7 +210,6 @@ export class SignatureMatcher extends EventEmitter<SignatureMatcherEvents> {
    */
   attach(bus: DetectionBus, registry: DetectionRegistry): void {
     this.bus = bus;
-    this.registry = registry;
 
     const rules = this.compilePayloads();
     registry.addRules(rules);

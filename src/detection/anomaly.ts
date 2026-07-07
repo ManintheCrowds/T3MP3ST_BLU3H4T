@@ -283,7 +283,6 @@ export class AnomalyEngine extends EventEmitter<AnomalyEngineEvents> {
     baseline.samples.push(value);
     baseline.updatedAt = Date.now();
 
-    const cutoff = Date.now() - baseline.windowMs;
     baseline.samples = baseline.samples.filter((_, i) =>
       i >= baseline.samples.length - 10000
     );

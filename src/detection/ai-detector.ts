@@ -14,7 +14,6 @@ import type {
   AIDetectionConfig,
   AIDetectionSignal,
   AIAgentProfile,
-  AISignalType,
   DetectionAlert,
   NormalizedEvent,
 } from './types.js';
@@ -403,7 +402,7 @@ export class AIAgentDetector extends EventEmitter<AIDetectorEvents> {
 
   private createAIAlert(
     event: NormalizedEvent,
-    source: string,
+    _source: string,
     confidence: number,
     description: string,
   ): DetectionAlert {

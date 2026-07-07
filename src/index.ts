@@ -244,7 +244,7 @@ import { getLLMConfig } from './config/index.js';
 import { AgentLoop } from './agent/index.js';
 import { OpGeneral } from './general/index.js';
 import { createGovernanceStack, type GovernanceStack } from './governance/index.js';
-import { createDetectionEngine, type DetectionEngine } from './detection/index.js';
+import { createDetectionEngine, type DetectionEngine, type CorrelatedAlert } from './detection/index.js';
 
 // Stubs for advanced modules
 import {
@@ -421,7 +421,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       this.detection = createDetectionEngine(config.detection);
 
       // SCP gate on correlated alerts before Evidence Vault persistence
-      this.detection.bus.on('alert:correlated', async (correlated) => {
+      this.detection.bus.on('alert:correlated', async (correlated: CorrelatedAlert) => {
         const finding = {
           id: correlated.id,
           title: correlated.aiAgentDetected
@@ -431,11 +431,11 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
           severity: correlated.severity,
           targetId: correlated.sourceIP ?? 'unknown',
           operatorId: 'detection-engine',
-          phase: 'reconnaissance' as const,
-          evidence: correlated.alerts.map((a) => ({
+          phase: KillChainPhase.RECON,
+          evidence: correlated.alerts.map((alert) => ({
             type: 'log' as const,
-            content: `${a.ruleName}: ${a.matchedContent ?? a.description}`,
-            timestamp: a.timestamp,
+            content: `${alert.ruleName}: ${alert.matchedContent ?? alert.description}`,
+            timestamp: alert.timestamp,
           })),
           discoveredAt: correlated.timestamp,
         };
@@ -615,7 +615,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         cvss: finding.cvss,
         cve: finding.cve,
         cwe: finding.cwe,
-        exploitAvailable: finding.exploitedAt != null,
+        exploitAvailable: finding.exploitedAt !== null && finding.exploitedAt !== undefined,
         references: finding.references,
       });
     }
@@ -797,7 +797,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   private static resolveTaskTimeoutMs(): number {
     const DEFAULT_TASK_TIMEOUT_MS = 300000; // 5 minutes — generous backstop, not a deadline
     const raw = process.env.T3MP3ST_TASK_TIMEOUT_MS;
-    if (raw != null && raw.trim() !== '') {
+    if (raw !== null && raw !== undefined && raw.trim() !== '') {
       const parsed = Number(raw);
       if (Number.isFinite(parsed) && parsed > 0) return parsed;
     }
@@ -998,16 +998,16 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       const startedAt = this.dispatchStartTimes.get(taskId);
       const operator = this.dispatchOperators.get(taskId);
 
-      const elapsed = startedAt != null ? now - startedAt : Number.POSITIVE_INFINITY;
+      const elapsed = startedAt !== null && startedAt !== undefined ? now - startedAt : Number.POSITIVE_INFINITY;
       const overTime = elapsed >= this.taskTimeoutMs;
 
       // Wedge symptom: operator claims to be working (executing/tasked) but has no
       // current task — the promise silently dropped it. Only treat this as a wedge
       // once the backstop window has elapsed, so a normal in-between-status tick
       // (e.g. the brief gap before currentTask is set) is never misread as hung.
-      const wedged = operator != null &&
+      const wedged = operator !== null && operator !== undefined &&
         (operator.status === 'executing' || operator.status === 'tasked') &&
-        operator.state.currentTask == null &&
+        operator.state.currentTask === null &&
         overTime;
 
       if (!overTime && !wedged) continue;

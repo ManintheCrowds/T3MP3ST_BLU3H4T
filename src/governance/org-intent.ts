@@ -227,7 +227,7 @@ export class OrgIntentEnforcer extends EventEmitter<OrgIntentEvents> {
   /**
    * Pre-mission validation: ensure the mission parameters don't violate boundaries.
    */
-  validateMission(missionName: string, scope: string[], objectives: string[]): BoundaryCheckResult {
+  validateMission(missionName: string, scope: string[], _objectives: string[]): BoundaryCheckResult {
     if (scope.length === 0) {
       return {
         allowed: false,
@@ -250,6 +250,8 @@ export interface BoundaryContext {
   hasExplicitAuthorization?: boolean;
   hasHiddenConstraints?: boolean;
   conflictingOperators?: string[];
+  phase?: import('../types/index.js').KillChainPhase;
+  scope?: string[];
 }
 
 export function createOrgIntentEnforcer(policyPath?: string): OrgIntentEnforcer {

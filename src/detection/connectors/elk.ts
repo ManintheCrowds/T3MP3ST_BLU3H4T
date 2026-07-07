@@ -169,37 +169,34 @@ export class ELKConnector extends SIEMConnector {
   /**
    * Create an Arsenal tool definition for WATCHER operator.
    */
-  toArsenalTool(): CustomTool {
-    const connector = this;
-    return {
-      name: `elk_search_${this.config.name}`,
-      description: `Search security logs from Elasticsearch "${this.config.name}"`,
-      category: 'detection',
-      parameters: [
-        { name: 'query', type: 'string', description: 'Lucene query string', required: false, default: '*' },
-        { name: 'limit', type: 'number', description: 'Max results', required: false, default: 50 },
-        { name: 'index', type: 'string', description: 'Index pattern', required: false },
-      ],
-      async handler(context: ToolContext): Promise<ToolResult> {
-        try {
-          const events = await connector.poll();
-          return {
-            success: true,
-            output: `Fetched ${events.length} events from ELK "${connector.config.name}"`,
-            findings: events
-              .filter((e) => e.data?.eventSeverity && (e.data.eventSeverity as number) >= 3)
-              .map((e) => ({
-                title: `ELK Alert: ${(e.data?.ruleName as string) ?? 'Security event'}`,
-                severity: mapELKSeverity((e.data?.eventSeverity as number) ?? 0),
-                details: e.raw.slice(0, 500),
-              })),
-          };
-        } catch (err) {
-          return { success: false, error: err instanceof Error ? err.message : String(err) };
-        }
-      },
-    };
-  }
+  toArsenalTool = (): CustomTool => ({
+    name: `elk_search_${this.config.name}`,
+    description: `Search security logs from Elasticsearch "${this.config.name}"`,
+    category: 'detection',
+    parameters: [
+      { name: 'query', type: 'string', description: 'Lucene query string', required: false, default: '*' },
+      { name: 'limit', type: 'number', description: 'Max results', required: false, default: 50 },
+      { name: 'index', type: 'string', description: 'Index pattern', required: false },
+    ],
+    handler: async (_context: ToolContext): Promise<ToolResult> => {
+      try {
+        const events = await this.poll();
+        return {
+          success: true,
+          output: `Fetched ${events.length} events from ELK "${this.config.name}"`,
+          findings: events
+            .filter((e) => e.data?.eventSeverity && (e.data.eventSeverity as number) >= 3)
+            .map((e) => ({
+              title: `ELK Alert: ${(e.data?.ruleName as string) ?? 'Security event'}`,
+              severity: mapELKSeverity((e.data?.eventSeverity as number) ?? 0),
+              details: e.raw.slice(0, 500),
+            })),
+        };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  });
 }
 
 function mapELKSeverity(severity: number): 'critical' | 'high' | 'medium' | 'low' | 'info' {

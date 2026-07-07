@@ -432,6 +432,10 @@ async function createMission(tempest: Tempest): Promise<void> {
     name,
     objectives: objectives.split(',').map((o: string) => o.trim()),
   });
+  if (!mission) {
+    showWarning('Mission creation blocked by governance (org-intent)');
+    return;
+  }
 
   tempest.mission.startMission(mission.id);
 
@@ -482,6 +486,10 @@ async function generateReport(tempest: Tempest): Promise<void> {
       name: 'Ad-hoc Report',
       objectives: ['Generate findings report'],
     });
+    if (!tempMission) {
+      showWarning('Report generation blocked — could not create ad-hoc mission');
+      return;
+    }
     tempest.mission.startMission(tempMission.id);
   }
 
@@ -513,7 +521,7 @@ async function openSettings(): Promise<void> {
   ]);
 
   switch (setting) {
-    case 'view':
+    case 'view': {
       const settings = config.getAll();
       console.log('');
       console.log(chalk.bold('Current Configuration:'));
@@ -525,8 +533,9 @@ async function openSettings(): Promise<void> {
       console.log(chalk.cyan('  OpenAI:'), hasApiKey('openai') ? chalk.green('configured') : chalk.red('not set'));
       console.log('');
       break;
+    }
 
-    case 'provider':
+    case 'provider': {
       const providers = getConfiguredProviders().filter(p => p !== 'mock' && p !== 'local');
       if (providers.length === 0) {
         showWarning('No API keys configured');
@@ -544,6 +553,7 @@ async function openSettings(): Promise<void> {
       config.setDefaultProvider(provider);
       showSuccess(`Default provider set to: ${provider}`);
       break;
+    }
 
     case 'model': {
       const currentProvider = config.get('defaultProvider');
@@ -569,7 +579,7 @@ async function openSettings(): Promise<void> {
       break;
     }
 
-    case 'apikey':
+    case 'apikey': {
       const { keyProvider } = await inquirer.prompt([
         {
           type: 'list',
@@ -591,6 +601,7 @@ async function openSettings(): Promise<void> {
         showSuccess(`${keyProvider} API key saved!`);
       }
       break;
+    }
   }
 }
 

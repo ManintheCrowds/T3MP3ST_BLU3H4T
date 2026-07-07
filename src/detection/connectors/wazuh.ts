@@ -148,34 +148,31 @@ export class WazuhConnector extends SIEMConnector {
   /**
    * Create an Arsenal tool definition for WATCHER operator.
    */
-  toArsenalTool(): CustomTool {
-    const connector = this;
-    return {
-      name: `wazuh_alerts_${this.config.name}`,
-      description: `Fetch recent alerts from Wazuh instance "${this.config.name}"`,
-      category: 'detection',
-      parameters: [
-        { name: 'limit', type: 'number', description: 'Max alerts to fetch', required: false, default: 50 },
-        { name: 'level_min', type: 'number', description: 'Minimum rule level', required: false, default: 3 },
-      ],
-      async handler(context: ToolContext): Promise<ToolResult> {
-        try {
-          const events = await connector.poll();
-          return {
-            success: true,
-            output: `Fetched ${events.length} alerts from Wazuh "${connector.config.name}"`,
-            findings: events.map((e) => ({
-              title: `Wazuh Alert: ${(e.data?.ruleDescription as string) ?? 'Unknown'}`,
-              severity: mapWazuhLevel((e.data?.ruleLevel as number) ?? 0),
-              details: e.raw.slice(0, 500),
-            })),
-          };
-        } catch (err) {
-          return { success: false, error: err instanceof Error ? err.message : String(err) };
-        }
-      },
-    };
-  }
+  toArsenalTool = (): CustomTool => ({
+    name: `wazuh_alerts_${this.config.name}`,
+    description: `Fetch recent alerts from Wazuh instance "${this.config.name}"`,
+    category: 'detection',
+    parameters: [
+      { name: 'limit', type: 'number', description: 'Max alerts to fetch', required: false, default: 50 },
+      { name: 'level_min', type: 'number', description: 'Minimum rule level', required: false, default: 3 },
+    ],
+    handler: async (_context: ToolContext): Promise<ToolResult> => {
+      try {
+        const events = await this.poll();
+        return {
+          success: true,
+          output: `Fetched ${events.length} alerts from Wazuh "${this.config.name}"`,
+          findings: events.map((e) => ({
+            title: `Wazuh Alert: ${(e.data?.ruleDescription as string) ?? 'Unknown'}`,
+            severity: mapWazuhLevel((e.data?.ruleLevel as number) ?? 0),
+            details: e.raw.slice(0, 500),
+          })),
+        };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  });
 }
 
 function mapWazuhLevel(level: number): 'critical' | 'high' | 'medium' | 'low' | 'info' {

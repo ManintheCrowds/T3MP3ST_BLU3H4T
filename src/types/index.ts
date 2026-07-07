@@ -299,6 +299,8 @@ export interface Mission {
   completedAt?: number;
   currentPhase: KillChainPhase;
   progress: number;
+  /** Authorized target addresses for org-intent scope checks during phase advance. */
+  targets?: string[];
 }
 
 export interface RulesOfEngagement {
@@ -435,6 +437,7 @@ export interface ToolFinding {
 export interface ToolResult {
   success: boolean;
   output?: string;
+  data?: unknown;
   findings?: ToolFinding[];
   credentials?: Credential[];
   error?: string;
@@ -554,6 +557,7 @@ export interface CommandEvents {
   'detection:triggered': DetectionEvent;
   'mission:phase_changed': { missionId: string; phase: KillChainPhase };
   'abort:recommended': string;
+  'governance:mission_blocked': { reason: string };
   // Detection engine events (Phase 2)
   'detection:alert_raised': { ruleId: string; severity: Severity; sourceIP?: string };
   'detection:ai_agent_detected': { sourceIP: string; frameworkId?: string; confidence: number };

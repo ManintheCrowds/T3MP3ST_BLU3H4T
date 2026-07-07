@@ -131,7 +131,6 @@ export class AlertCorrelator extends EventEmitter<CorrelatorEvents> {
 
   private correlate(source: string, alerts: DetectionAlert[]): CorrelatedAlert {
     const detectorTypes = new Set(alerts.map((a) => a.detectorType));
-    const categories = new Set(alerts.map((a) => a.category));
 
     const baseConfidence = alerts.reduce((sum, a) => sum + a.confidence, 0) / alerts.length;
     const detectorBoost = (detectorTypes.size - 1) * this.config.confidenceBoostPerDetector;

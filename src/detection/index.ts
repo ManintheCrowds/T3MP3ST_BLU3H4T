@@ -16,8 +16,8 @@ import { AnomalyEngine, createAnomalyEngine } from './anomaly.js';
 import { AIAgentDetector, createAIAgentDetector } from './ai-detector.js';
 import { AlertCorrelator, createAlertCorrelator } from './correlator.js';
 import { SIEMConnector } from './connectors/types.js';
-import { WazuhConnector, createWazuhConnector } from './connectors/wazuh.js';
-import { ELKConnector, createELKConnector } from './connectors/elk.js';
+import { createWazuhConnector } from './connectors/wazuh.js';
+import { createELKConnector } from './connectors/elk.js';
 import { EnvCredentialProvider } from './connectors/types.js';
 
 // =============================================================================
