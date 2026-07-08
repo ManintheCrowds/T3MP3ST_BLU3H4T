@@ -13,6 +13,7 @@
     "setup:api": "bash scripts/setup-api.sh",
     "doctor": "node scripts/doctor.mjs",
     "verify-claims": "node scripts/verify-claims.mjs",
+    "verify:docs": "node scripts/verify-readme-docs.mjs",
     "disclose": "node scripts/disclosure-gen.mjs",
     "test:disclose": "node scripts/test-disclosure-gen.mjs",
     "verify-finding": "node scripts/verify-finding.mjs",

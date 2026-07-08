@@ -2,10 +2,13 @@
 
 ## Overview
 
-The detection engine inverts Tempest's OPSEC layer. Where the original system
-tracks detection events to *avoid* them, BLU3H4T tracks detection events to
-*generate* them. The payload databases become detection signatures. The ATT&CK
-mappings become detection rules.
+The detection engine reframes Tempest's OPSEC layer for defenders. Where the
+original system tracks detection events to *avoid* them, BLU3H4T tracks
+detection events to *generate* alerts. The payload databases become detection
+signatures. The ATT&CK mappings become detection rules.
+
+**Scale:** 13 TypeScript modules under `src/detection/` (verified by
+`npm run verify:docs`).
 
 ---
 

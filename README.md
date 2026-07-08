@@ -30,26 +30,26 @@ Protect your organization from unethical red teams — including autonomous AI a
 
 ## What is BLU3H4T?
 
-BLU3H4T **inverts the offensive kill chain**. Where the upstream T3MP3ST
-framework sends 8 operators down the attack pipeline (recon → exploit →
-exfil), BLU3H4T deploys 8 *defensive* operators that model attacker behavior
-to **detect**, **validate**, and **respond** to threats against your
-organization.
+BLU3H4T is a **governance-first blue team** platform. Eight defensive
+operators model attacker behavior to **detect**, **validate**, and **respond**
+to threats against your organization — with human-in-the-loop gates on every
+active response.
 
 Three things set it apart:
 
 1. **Governance-first.** SCP content gates, org-intent hard boundaries
-   (hb-1..hb-5), and human-in-the-loop approval gates compose a governance
-   stack that no pure offensive framework has. Every active-response action
-   requires human confirmation.
+   (hb-1..hb-5), scope matching on mission targets, and human-in-the-loop
+   approval gates compose a governance stack that wraps every operator and
+   tool path. Active-response actions require human confirmation.
 2. **Purple team built in.** The VALIDATOR operator can probe your own
    systems — with strict scoping and HITL gates — to find vulnerabilities
    before attackers do.
-3. **Anti-AI red team.** Designed to detect autonomous AI agents performing
-   unauthorized reconnaissance and exploitation. WATCHER identifies the
-   traffic signatures of tool-driven, rapid-sequential probing.
+3. **AI attacker detection.** WATCHER and the detection engine fingerprint
+   autonomous agents (ReAct loops, tool signatures, rapid-sequential probing)
+   using an 18-technique defender playbook — see
+   [ANTI_AI_REDTEAM_DESIGN](docs/ANTI_AI_REDTEAM_DESIGN.md).
 
-## Defensive operators
+## Defensive operators (8)
 
 | Operator | D3FEND | What it does |
 |---|---|---|
@@ -78,7 +78,9 @@ External content (tool output, feeds, LLM responses)
   └── HITL Gates ────── requestApproval() / escalate() / requestGuidance()
 ```
 
-Source: `src/governance/` — `scp-client.ts`, `org-intent.ts`, `hitl.ts`, `risk-tiers.ts`
+Source: `src/governance/` (6 modules) — `scp-client.ts`, `org-intent.ts`,
+`hitl.ts`, `risk-tiers.ts`, `scope-match.ts`. Mission target semantics:
+[mission-targets-semantics](docs/governance/mission-targets-semantics.md)
 
 ## Detection engine
 
@@ -104,6 +106,36 @@ Source: `src/detection/` — 13 files, factory: `createDetectionEngine()`
 
 ## Quick start
 
+### Path 1 — CLI smoke (no server)
+
+```bash
+npm install
+npm run build
+npx t3mp3st test          # connectivity / provider smoke
+npm run doctor            # optional: toolchain + config checks
+```
+
+### Path 2 — Programmatic (governance + detection)
+
+```typescript
+import { createTempest } from 't3mp3st';
+
+const t = createTempest({
+  name: 'SOC-Watch',
+  llm: { provider: 'openrouter', model: 'anthropic/claude-sonnet-4' },
+  governance: { enabled: true, authorizedScope: ['10.0.0.0/24'] },
+  detection: { enabled: true },
+});
+
+t.start();
+```
+
+Set `T3MP3ST_AUTHORIZED_SCOPE` (or `authorizedScope` above) so med-tier tools
+can scope-check targets — see
+[mission-targets-semantics](docs/governance/mission-targets-semantics.md).
+
+### Path 3 — War Room server
+
 ```bash
 npm install
 npm run server        # War Room → http://127.0.0.1:3333/ui/
@@ -126,21 +158,6 @@ Connect a local agent (Claude Code / Codex / Hermes) in Settings, or set an API 
 export OPENROUTER_API_KEY=...     # or ANTHROPIC_API_KEY
 ```
 
-### Programmatic (governance + detection)
-
-```typescript
-import { createTempest } from 't3mp3st';
-
-const t = createTempest({
-  name: 'SOC-Watch',
-  llm: { provider: 'openrouter', model: 'anthropic/claude-sonnet-4' },
-  governance: { enabled: true, authorizedScope: ['10.0.0.0/24'] },
-  detection: { enabled: true },
-});
-
-t.start();
-```
-
 ## Architecture
 
 ```
@@ -159,19 +176,6 @@ t.start();
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Operator-to-operator mapping (offensive → defensive)
-
-| Offensive (upstream) | ATT&CK | Defensive (BLU3H4T) | D3FEND |
-|---|---|---|---|
-| Recon | TA0043 | SENTINEL | D3-DE |
-| Scanner | TA0007 | WATCHER | D3-DA |
-| Exploiter | TA0001 | VALIDATOR | D3-TE |
-| Infiltrator | TA0008 | HUNTER | D3-TE |
-| Exfiltrator | TA0009 | RESPONDER | D3-ER |
-| Ghost | TA0003 | DECEIVER | D3-DC |
-| Coordinator | TA0011 | GUARDIAN | — |
-| Analyst | — | ANALYST | — |
-
 ## Team presets
 
 | Preset | Operators | Use case |
@@ -185,31 +189,27 @@ t.start();
 
 | Doc | Contents |
 |---|---|
+| [FORK_LINEAGE](docs/FORK_LINEAGE.md) | Upstream fork: kept, inverted, added; operator mapping |
 | [COMPARATIVE_ANALYSIS](docs/COMPARATIVE_ANALYSIS.md) | Gap analysis: T3MP3ST vs Blue-Hat / SCP / PentAGI |
 | [SCOPE_AND_AUTHORIZATION](docs/SCOPE_AND_AUTHORIZATION.md) | Authority model, scope receipts, evidence rules |
-| [DETECTION_ENGINE_DESIGN](docs/DETECTION_ENGINE_DESIGN.md) | Detection subsystem architecture and rule taxonomy |
-| [ANTI_AI_REDTEAM_DESIGN](docs/ANTI_AI_REDTEAM_DESIGN.md) | AI red team detection: 18-technique playbook design |
-| [RESPONSE_DECEPTION_DESIGN](docs/RESPONSE_DECEPTION_DESIGN.md) | Response and deception engine design |
+| [mission-targets-semantics](docs/governance/mission-targets-semantics.md) | `mission.targets` + authorized scope wiring |
+| [DETECTION_ENGINE_DESIGN](docs/DETECTION_ENGINE_DESIGN.md) | Detection subsystem (13 files) and rule taxonomy |
+| [ANTI_AI_REDTEAM_DESIGN](docs/ANTI_AI_REDTEAM_DESIGN.md) | AI attacker detection: 18-technique playbook |
+| [RESPONSE_DECEPTION_DESIGN](docs/RESPONSE_DECEPTION_DESIGN.md) | RESPONDER / DECEIVER design |
 | [FEATURES](FEATURES.md) | Feature-by-feature status |
 | [WHITEPAPER](WHITEPAPER.md) | Technical architecture reference |
 | [VISION](VISION.md) | Research directions (defensive reframe) |
 
-## What this inherits from upstream T3MP3ST
+## Fork lineage
 
-The offensive infrastructure remains available for authorized purple team
-operations. The recon engine, Arsenal tools, benchmark system, and War Room UI
-are unchanged — what's new is the *governance layer* that wraps them and the
-*defensive operator profiles* that reframe how they're used.
+Forked from [elder-plinius/T3MP3ST](https://github.com/elder-plinius/T3MP3ST).
+BLU3H4T keeps the Arsenal, War Room, benchmarks, and evidence vault; adds a
+governance stack and 13-file detection engine; reframes operators for blue-team
+detect / validate / respond. Upstream offensive modules remain for **authorized
+purple-team** use only.
 
-| From upstream | Status | Defensive use |
-|---|---|---|
-| Recon engine | Stable | Attack surface monitoring (SENTINEL) |
-| Arsenal (15+ tools) | Stable | Validation tools (VALIDATOR, gated) |
-| War Room UI | Stable | SOC dashboard |
-| Evidence Vault | Stable | Incident evidence collection |
-| OPSEC layer | Stable | Inverted: detection targets, not avoidance |
-| Payload databases | Stable | Detection signatures |
-| Benchmark system | Stable | Measure detection rates |
+Full comparison: [FORK_LINEAGE.md](docs/FORK_LINEAGE.md). Governance patterns
+from the [portfolio harness](https://github.com/ManintheCrowds).
 
 ## Contributing
 
@@ -223,8 +223,3 @@ Build for defenders. HITL gates and org-intent boundaries are non-negotiable.
 
 MIT. See [LICENSE](LICENSE).
 
----
-
-Forked from [elder-plinius/T3MP3ST](https://github.com/elder-plinius/T3MP3ST).
-Governance stack: SCP + org-intent + HITL from
-[portfolio harness](https://github.com/ManintheCrowds).

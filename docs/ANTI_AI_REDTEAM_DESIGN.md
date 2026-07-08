@@ -1,12 +1,15 @@
-# Phase 4: Anti-AI Red Team Detection Design
+# Phase 4: Anti-AI Attacker Detection Design
 
 ## Overview
 
-The unique differentiator: detect when **autonomous AI agents** are performing
-unauthorized security testing against the organization. As AI-powered
-offensive tools (T3MP3ST, AutoExploit, PentestGPT, etc.) proliferate,
-organizations need defenses specifically designed to recognize and counter
-machine-speed attacks.
+**Defender perspective:** WATCHER and the detection engine identify when
+**autonomous AI agents** perform unauthorized security testing against the
+organization. The 18-technique playbook in `docs/AI_REDTEAM_TECHNIQUES.md`
+documents attack patterns so defenders can detect them — not so operators can
+run offensive campaigns.
+
+As AI-powered offensive tools proliferate, organizations need defenses
+specifically designed to recognize and counter machine-speed attacks.
 
 ---
 

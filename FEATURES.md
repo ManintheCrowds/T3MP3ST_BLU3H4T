@@ -112,7 +112,10 @@
 
 ## 3. Operator System (Agents)
 
-### 8 Operator Archetypes
+> **Primary model:** §20 Defensive Operators (8 blue-team archetypes).  
+> This section documents **upstream offensive modules** retained for authorized purple-team scenarios only.
+
+### 8 Upstream Offensive Archetypes (legacy)
 | Archetype | Phase | MITRE Tactics | Status |
 |-----------|-------|---------------|--------|
 | **RECON** | Reconnaissance | TA0043 | [x] Implemented |
@@ -892,9 +895,15 @@ Canonical mapping: [PLINY_DEFENSIVE_RENAME.md](docs/PLINY_DEFENSIVE_RENAME.md) �
 
 ## 19. Governance Stack
 
-The governance layer that pure offensive frameworks lack. Composes four subsystems gating all content and actions.
+The governance layer that pure offensive frameworks lack. Composes SCP, org-intent, HITL, risk tiers, and scope matching.
 
-Source: `src/governance/` — `scp-client.ts`, `org-intent.ts`, `hitl.ts`, `risk-tiers.ts`
+Source: `src/governance/` (6 modules) — `scp-client.ts`, `org-intent.ts`, `hitl.ts`, `risk-tiers.ts`, `scope-match.ts`
+
+### Scope Matching
+- [x] `isTargetInAuthorizedScope()` — CIDR / hostname scope checks for mission targets
+- [x] `syncMissionTargets()` — populate `mission.targets` from authorized scope
+- [x] Wired into `createMission`, CLI, and TempestCommand lifecycle
+- [x] Semantics: [mission-targets-semantics.md](docs/governance/mission-targets-semantics.md)
 
 ### SCP Pipeline (Secure-Contain-Protect)
 - [x] `inspectContent()` — tier classification (injection / reversal / clean)
@@ -930,7 +939,7 @@ Source: `src/governance/` — `scp-client.ts`, `org-intent.ts`, `hitl.ts`, `risk
 
 ## 20. Defensive Operators
 
-8 defensive archetypes that invert the offensive kill chain. Each maps to MITRE D3FEND defensive techniques.
+8 defensive archetypes that model attacker behavior to detect, validate, and respond. Each maps to MITRE D3FEND defensive techniques.
 
 Source: `src/operators/defensive.ts`
 
@@ -999,9 +1008,9 @@ Source: `src/detection/`
 
 ---
 
-## 22. AI Red Team Detection
+## 22. AI Attacker Detection
 
-18-technique playbook for detecting and defending against autonomous AI red team attacks.
+18-technique defender playbook for detecting autonomous AI agents performing unauthorized probing and exploitation.
 
 Source: `src/resources/ai-redteam-playbook.ts`, `docs/ANTI_AI_REDTEAM_DESIGN.md`
 
@@ -1067,6 +1076,7 @@ Source: `src/resources/ai-redteam-playbook.ts`, `docs/ANTI_AI_REDTEAM_DESIGN.md`
 2. [ ] Marketplace for detection rules/plugins
 3. [ ] AI-powered remediation suggestions
 4. [ ] Compliance report generation (PCI, HIPAA, SOC2)
+5. [ ] Upstream offensive operator paths — document authorized-only purple-team scope (no expansion without HITL + scope receipts)
 
 ---
 
@@ -1079,5 +1089,5 @@ Source: `src/resources/ai-redteam-playbook.ts`, `docs/ANTI_AI_REDTEAM_DESIGN.md`
 
 ---
 
-*Last updated: July 2026*
+*Last updated: 2026-07-07*
 *Version: 2.0.0*
