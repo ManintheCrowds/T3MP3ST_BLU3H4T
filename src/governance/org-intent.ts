@@ -168,7 +168,7 @@ export class OrgIntentEnforcer extends EventEmitter<OrgIntentEvents> {
         escalation: `ESCALATE: Operators ${context.conflictingOperators.join(', ')} disagree on approach for "${action}". Human review required.`,
       };
       this.emit('boundary:violated', { boundary: 'hb-1', context: action });
-      this.emit('escalation:triggered', { boundary: 'hb-1', reason: result.escalation! });
+      this.emit('escalation:triggered', { boundary: 'hb-1', reason: result.escalation ?? 'boundary violation' });
       return result;
     }
 
@@ -180,7 +180,7 @@ export class OrgIntentEnforcer extends EventEmitter<OrgIntentEvents> {
         escalation: `ESCALATE: Action "${action}" targets "${context.targetAddress}" which is not in authorized scope. Potential complicity risk.`,
       };
       this.emit('boundary:violated', { boundary: 'hb-2', context: action });
-      this.emit('escalation:triggered', { boundary: 'hb-2', reason: result.escalation! });
+      this.emit('escalation:triggered', { boundary: 'hb-2', reason: result.escalation ?? 'boundary violation' });
       return result;
     }
 
@@ -204,7 +204,7 @@ export class OrgIntentEnforcer extends EventEmitter<OrgIntentEvents> {
           escalation: `ESCALATE: Action "${action}" requires explicit authorization (destructive=${context.isDestructive}, credentials=${context.involvesCredentials}).`,
         };
         this.emit('boundary:violated', { boundary: 'hb-4', context: action });
-        this.emit('escalation:triggered', { boundary: 'hb-4', reason: result.escalation! });
+        this.emit('escalation:triggered', { boundary: 'hb-4', reason: result.escalation ?? 'boundary violation' });
         return result;
       }
     }

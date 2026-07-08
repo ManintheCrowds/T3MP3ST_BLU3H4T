@@ -959,7 +959,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         this.clearDispatch(task.id);
         try {
           taskQueue.fail(task.id, _error instanceof Error ? _error.message : String(_error));
-        } catch (failErr) {
+        } catch {
           // Swallow — task may already be in a terminal state
         }
       });

@@ -528,7 +528,8 @@ export function buildCallGraph(blocks: CodeBlock[]): Record<string, CallGraphEnt
     const bodyAfterSignature = b.body.split('\n').slice(1).join('\n');
     for (const [name, ids] of byName) {
       if (name === b.name && ids.length === 1) continue; // pure self, skip
-      const re = nameRes.get(name)!;
+      const re = nameRes.get(name);
+      if (!re) continue;
       if (re.test(bodyAfterSignature)) {
         for (const targetId of ids) {
           if (targetId === b.id) continue; // no self-edge
@@ -610,7 +611,9 @@ export function reachability(
   }
 
   while (queue.length) {
-    const { id, depth, path } = queue.shift()!;
+    const item = queue.shift();
+    if (!item) break;
+    const { id, depth, path } = item;
     const entry = callGraph[id];
     if (!entry) continue;
     for (const callee of entry.callees) {

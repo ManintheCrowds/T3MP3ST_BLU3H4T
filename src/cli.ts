@@ -51,7 +51,7 @@ function showBanner(): void {
   console.log(chalk.gray('  Tactical Execution Multi-agent Platform for Elite Security Testing\n'));
 }
 
-function showBox(title: string, content: string, borderColor: string = 'cyan'): void {
+function showBox(title: string, content: string, borderColor: 'cyan' | 'green' | 'yellow' | 'red' = 'cyan'): void {
   console.log(
     boxen(content, {
       title,
@@ -59,7 +59,7 @@ function showBox(title: string, content: string, borderColor: string = 'cyan'): 
       padding: 1,
       margin: { top: 0, bottom: 1, left: 1, right: 1 },
       borderStyle: 'round',
-      borderColor: borderColor as any,
+      borderColor,
     })
   );
 }
@@ -500,7 +500,7 @@ async function generateReport(tempest: Tempest): Promise<void> {
     console.log(chalk.bold.cyan('═══ ENGAGEMENT REPORT ═══'));
     console.log('');
     console.log(report);
-  } catch (error) {
+  } catch {
     showWarning('No findings to report yet.');
   }
 }
@@ -669,7 +669,13 @@ program
 
     const provider = config.get('defaultProvider');
 
-    if (!hasApiKey(provider as any)) {
+    const needsApiKey =
+      provider === 'openrouter'
+      || provider === 'venice'
+      || provider === 'anthropic'
+      || provider === 'openai';
+
+    if (needsApiKey && !hasApiKey(provider)) {
       showError(`No API key configured for ${provider}`);
       showInfo('Run "npx t3mp3st setup" to configure API keys');
       return;

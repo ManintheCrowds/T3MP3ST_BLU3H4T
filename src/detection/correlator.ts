@@ -148,8 +148,8 @@ export class AlertCorrelator extends EventEmitter<CorrelatorEvents> {
     }
 
     const killChainPhases = alerts
-      .filter((a) => a.mitreId)
-      .map((a) => a.mitreId!)
+      .map((a) => a.mitreId)
+      .filter((id): id is string => Boolean(id))
       .join(', ');
 
     return {

@@ -21,7 +21,7 @@ function showBanner(): void {
   console.log(chalk.cyan(getBanner()));
 }
 
-function showBox(title: string, content: string, borderColor: string = 'cyan'): void {
+function showBox(title: string, content: string, borderColor: 'cyan' | 'green' | 'yellow' | 'red' = 'cyan'): void {
   console.log(
     boxen(content, {
       title,
@@ -29,7 +29,7 @@ function showBox(title: string, content: string, borderColor: string = 'cyan'): 
       padding: 1,
       margin: 1,
       borderStyle: 'round',
-      borderColor: borderColor as any,
+      borderColor,
     })
   );
 }
@@ -407,7 +407,7 @@ async function setupApiKeys(): Promise<void> {
 }
 
 async function setupProvider(): Promise<void> {
-  const configuredProviders = [];
+  const configuredProviders: Array<{ name: string; value: 'openrouter' | 'venice' | 'anthropic' | 'openai' }> = [];
 
   if (hasApiKey('openrouter')) configuredProviders.push({ name: 'OpenRouter', value: 'openrouter' });
   if (hasApiKey('venice')) configuredProviders.push({ name: 'Venice', value: 'venice' });
@@ -420,7 +420,7 @@ async function setupProvider(): Promise<void> {
   }
 
   if (configuredProviders.length === 1) {
-    config.setDefaultProvider(configuredProviders[0].value as any);
+    config.setDefaultProvider(configuredProviders[0].value);
     showSuccess(`Default provider set to: ${configuredProviders[0].name}`);
     return;
   }

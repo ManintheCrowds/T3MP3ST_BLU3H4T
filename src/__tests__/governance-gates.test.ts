@@ -14,7 +14,15 @@ import { RiskTierGate } from '../governance/risk-tiers.js';
 import { isTargetInAuthorizedScope } from '../governance/scope-match.js';
 import { HITLGateManager } from '../governance/hitl.js';
 import { KillChainPhase } from '../types/index.js';
-import type { CustomTool } from '../types/index.js';
+import type { CustomTool, Mission } from '../types/index.js';
+
+function requireMission(mission: Mission | null): Mission {
+  expect(mission).not.toBeNull();
+  if (!mission) {
+    throw new Error('expected mission');
+  }
+  return mission;
+}
 
 function mockTool(name: string, output: string): CustomTool {
   return {
@@ -326,8 +334,9 @@ describe('Governance gates', () => {
       });
       expect(created).not.toBeNull();
 
-      missionControl.syncMissionTargets(created!.id, ['https://b.example.com', 'https://a.example.com']);
-      expect(missionControl.getMission(created!.id)?.targets).toEqual([
+      const mission = requireMission(created);
+      missionControl.syncMissionTargets(mission.id, ['https://b.example.com', 'https://a.example.com']);
+      expect(missionControl.getMission(mission.id)?.targets).toEqual([
         'https://a.example.com',
         'https://b.example.com',
       ]);
@@ -352,9 +361,10 @@ describe('Governance gates', () => {
         targets: ['https://evil.com'],
       });
       expect(created).not.toBeNull();
-      missionControl.startMission(created!.id);
+      const mission = requireMission(created);
+      missionControl.startMission(mission.id);
 
-      expect(() => missionControl.advancePhase(created!.id)).toThrow(/ESCALATE/);
+      expect(() => missionControl.advancePhase(mission.id)).toThrow(/ESCALATE/);
     });
 
     it('advancePhase allows when targets are in authorized scope', () => {
@@ -376,9 +386,10 @@ describe('Governance gates', () => {
         targets: ['https://app.example.com'],
       });
       expect(created).not.toBeNull();
-      missionControl.startMission(created!.id);
+      const mission = requireMission(created);
+      missionControl.startMission(mission.id);
 
-      const advanced = missionControl.advancePhase(created!.id);
+      const advanced = missionControl.advancePhase(mission.id);
       expect(advanced.currentPhase).toBe(KillChainPhase.WEAPONIZE);
     });
 
@@ -403,12 +414,13 @@ describe('Governance gates', () => {
         targets: [],
       });
       expect(created).not.toBeNull();
-      missionControl.startMission(created!.id);
+      const mission = requireMission(created);
+      missionControl.startMission(mission.id);
 
       // No targetAddress → hb-2 does not fire; phase advance proceeds without false authorization
-      const advanced = missionControl.advancePhase(created!.id);
+      const advanced = missionControl.advancePhase(mission.id);
       expect(advanced.currentPhase).toBe(KillChainPhase.WEAPONIZE);
-      expect(created!.targets).toEqual([]);
+      expect(mission.targets).toEqual([]);
     });
   });
 

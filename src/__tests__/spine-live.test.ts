@@ -41,7 +41,10 @@ describe('honesty spine is load-bearing at finding creation (operator.recordFind
     expect(f.verifiedAt).toBeUndefined();
     expect(f.verifyGate?.provenance).toBe('none');
     expect(blocked, 'a gate-blocked event must fire for an unbacked finding').toBeDefined();
-    expect(blocked!.reasons.join(' ')).toMatch(/provenance|evidence/i);
+    if (!blocked) {
+      throw new Error('expected gate-blocked event');
+    }
+    expect(blocked.reasons.join(' ')).toMatch(/provenance|evidence/i);
   });
 
   it('a tool-backed finding (real tool-output evidence) verifies', () => {
