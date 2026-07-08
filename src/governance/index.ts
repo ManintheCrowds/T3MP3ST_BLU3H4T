@@ -17,6 +17,8 @@ export type { HITLGateType, HITLStatus, HITLRequest, HITLConfig } from './hitl.j
 export { RiskTierGate, createRiskTierGate } from './risk-tiers.js';
 export type { RiskTier, RiskGateResult, AuditEntry } from './risk-tiers.js';
 
+export { isTargetInAuthorizedScope } from './scope-match.js';
+
 // =============================================================================
 // COMPOSED GOVERNANCE STACK
 // =============================================================================

@@ -66,8 +66,8 @@ No code changes required beyond the above; all passed on first green run and on 
 
 | Item | Severity | Notes |
 |------|----------|-------|
-| `Mission.targets` never populated in `createMission` | P2 | Field added for typecheck; `advancePhase` reads `mission.targets ?? []` but creation never sets it. Org-intent phase checks may see empty targets until a separate populate path is defined (target addresses ≠ RoE scope strings). **Deferred** — document only; do not populate from `rules.scope` without semantic review. |
-| 167 ESLint warnings | — | Non-blocking; upstream tolerates. Not in CI failure set. |
+| `Mission.targets` never populated in `createMission` | P2 | **Resolved (TCI-3)** — wired at `createMission`, `syncMissionTargets`, and call sites. See [mission-targets-semantics.md](../governance/mission-targets-semantics.md). |
+| 167 ESLint warnings | — | Non-blocking; triage in TCI-4 → [eslint-warning-debt.md](./eslint-warning-debt.md) |
 | `anomaly.ts` baseline filter no longer uses `windowMs` cutoff | P3 | `cutoff` was computed but unused before removal; pre-existing dead logic. |
 
 ---

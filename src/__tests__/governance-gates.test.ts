@@ -11,6 +11,7 @@ import { TempestCommand } from '../index.js';
 import { SCPClient } from '../governance/scp-client.js';
 import { OrgIntentEnforcer } from '../governance/org-intent.js';
 import { RiskTierGate } from '../governance/risk-tiers.js';
+import { isTargetInAuthorizedScope } from '../governance/scope-match.js';
 import { HITLGateManager } from '../governance/hitl.js';
 import { KillChainPhase } from '../types/index.js';
 import type { CustomTool } from '../types/index.js';
@@ -285,6 +286,129 @@ describe('Governance gates', () => {
       return blockedPromise.then((event) => {
         expect(event.name).toBe('No Scope Mission');
       });
+    });
+
+    it('sets mission.targets when provided at creation', () => {
+      const missionControl = new MissionControl();
+      const roe = {
+        scope: ['.example.com'],
+        excludedTargets: [],
+        allowedTechniques: [],
+        forbiddenTechniques: [],
+        maxDetectionEvents: 10,
+        requireManualApproval: [],
+      };
+
+      const created = missionControl.createMission({
+        name: 'Scoped Mission',
+        objectives: ['scan'],
+        rules: roe,
+        targets: ['https://app.example.com', 'https://app.example.com'],
+      });
+
+      expect(created?.targets).toEqual(['https://app.example.com']);
+    });
+
+    it('syncMissionTargets merges without duplicates', () => {
+      const missionControl = new MissionControl();
+      const created = missionControl.createMission({
+        name: 'Sync Mission',
+        objectives: ['scan'],
+        rules: {
+          scope: ['.example.com'],
+          excludedTargets: [],
+          allowedTechniques: [],
+          forbiddenTechniques: [],
+          maxDetectionEvents: 10,
+          requireManualApproval: [],
+        },
+        targets: ['https://a.example.com'],
+      });
+      expect(created).not.toBeNull();
+
+      missionControl.syncMissionTargets(created!.id, ['https://b.example.com', 'https://a.example.com']);
+      expect(missionControl.getMission(created!.id)?.targets).toEqual([
+        'https://a.example.com',
+        'https://b.example.com',
+      ]);
+    });
+
+    it('advancePhase blocks when target is outside authorized scope', () => {
+      const missionControl = new MissionControl();
+      missionControl.setOrgIntentEnforcer(new OrgIntentEnforcer());
+
+      const created = missionControl.createMission({
+        name: 'Out of scope',
+        objectives: ['scan'],
+        phases: [KillChainPhase.RECON, KillChainPhase.WEAPONIZE],
+        rules: {
+          scope: ['.example.com'],
+          excludedTargets: [],
+          allowedTechniques: [],
+          forbiddenTechniques: [],
+          maxDetectionEvents: 10,
+          requireManualApproval: [],
+        },
+        targets: ['https://evil.com'],
+      });
+      expect(created).not.toBeNull();
+      missionControl.startMission(created!.id);
+
+      expect(() => missionControl.advancePhase(created!.id)).toThrow(/ESCALATE/);
+    });
+
+    it('advancePhase allows when targets are in authorized scope', () => {
+      const missionControl = new MissionControl();
+      missionControl.setOrgIntentEnforcer(new OrgIntentEnforcer());
+
+      const created = missionControl.createMission({
+        name: 'In scope',
+        objectives: ['scan'],
+        phases: [KillChainPhase.RECON, KillChainPhase.WEAPONIZE],
+        rules: {
+          scope: ['.example.com'],
+          excludedTargets: [],
+          allowedTechniques: [],
+          forbiddenTechniques: [],
+          maxDetectionEvents: 10,
+          requireManualApproval: [],
+        },
+        targets: ['https://app.example.com'],
+      });
+      expect(created).not.toBeNull();
+      missionControl.startMission(created!.id);
+
+      const advanced = missionControl.advancePhase(created!.id);
+      expect(advanced.currentPhase).toBe(KillChainPhase.WEAPONIZE);
+    });
+
+    it('does not treat empty targets as authorized when scope is set', () => {
+      expect(isTargetInAuthorizedScope('https://app.example.com', ['.example.com'])).toBe(true);
+
+      const missionControl = new MissionControl();
+      missionControl.setOrgIntentEnforcer(new OrgIntentEnforcer());
+
+      const created = missionControl.createMission({
+        name: 'Empty targets',
+        objectives: ['scan'],
+        phases: [KillChainPhase.RECON, KillChainPhase.WEAPONIZE],
+        rules: {
+          scope: ['.example.com'],
+          excludedTargets: [],
+          allowedTechniques: [],
+          forbiddenTechniques: [],
+          maxDetectionEvents: 10,
+          requireManualApproval: [],
+        },
+        targets: [],
+      });
+      expect(created).not.toBeNull();
+      missionControl.startMission(created!.id);
+
+      // No targetAddress → hb-2 does not fire; phase advance proceeds without false authorization
+      const advanced = missionControl.advancePhase(created!.id);
+      expect(advanced.currentPhase).toBe(KillChainPhase.WEAPONIZE);
+      expect(created!.targets).toEqual([]);
     });
   });
 

@@ -16,6 +16,11 @@ import {
 } from '../types/index.js';
 import { KILL_CHAIN_ORDER } from '../operators/index.js';
 import type { OrgIntentEnforcer } from '../governance/org-intent.js';
+import { isTargetInAuthorizedScope } from '../governance/scope-match.js';
+
+function normalizeMissionTargets(addresses: readonly string[]): string[] {
+  return [...new Set(addresses.map((a) => a.trim()).filter(Boolean))];
+}
 
 // =============================================================================
 // EVENTS
@@ -250,6 +255,8 @@ export class MissionControl extends EventEmitter<MissionEvents> {
     objectives: string[];
     phases?: KillChainPhase[];
     rules?: RulesOfEngagement;
+    /** Concrete target addresses (not scope patterns). See docs/governance/mission-targets-semantics.md */
+    targets?: string[];
   }): Mission | null {
     // org-intent boundary check before mission creation
     if (this.orgIntent) {
@@ -275,11 +282,29 @@ export class MissionControl extends EventEmitter<MissionEvents> {
       status: 'planning',
       currentPhase: params.phases?.[0] || KillChainPhase.RECON,
       progress: 0,
+      targets: normalizeMissionTargets(params.targets ?? []),
     };
 
     this.missions.set(mission.id, mission);
     this.emit('mission:created', mission);
 
+    return mission;
+  }
+
+  /**
+   * Merge concrete target addresses into a mission (planning, active, or paused).
+   */
+  syncMissionTargets(missionId: string, addresses: string[]): Mission {
+    const mission = this.missions.get(missionId);
+    if (!mission) {
+      throw new Error(`Mission ${missionId} not found`);
+    }
+
+    if (mission.status !== 'planning' && mission.status !== 'active' && mission.status !== 'paused') {
+      throw new Error(`Cannot sync targets for mission in ${mission.status} status`);
+    }
+
+    mission.targets = normalizeMissionTargets([...(mission.targets ?? []), ...addresses]);
     return mission;
   }
 
@@ -455,9 +480,10 @@ export class MissionControl extends EventEmitter<MissionEvents> {
     if (this.orgIntent) {
       const scope = mission.rules?.scope ?? [];
       const targets = mission.targets ?? [];
-      const hasAuthorizedTargets = scope.length > 0 && targets.every(
-        (t: string) => scope.some((s: string) => t.includes(s))
-      );
+      const hasAuthorizedTargets =
+        scope.length > 0 &&
+        targets.length > 0 &&
+        targets.every((t) => isTargetInAuthorizedScope(t, scope));
       const check = this.orgIntent.checkBoundaries('advance_phase', {
         isAuthorizedTarget: hasAuthorizedTargets,
         targetAddress: targets[0],

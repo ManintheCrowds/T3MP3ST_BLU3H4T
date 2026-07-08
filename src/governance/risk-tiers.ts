@@ -11,6 +11,7 @@
  */
 
 import { EventEmitter } from 'eventemitter3';
+import { isTargetInAuthorizedScope } from './scope-match.js';
 
 // =============================================================================
 // TYPES
@@ -106,20 +107,12 @@ export class RiskTierGate extends EventEmitter<RiskTierEvents> {
     this.authorizedScope.delete(target);
   }
 
-  isInScope(target: string): boolean {
-    if (this.authorizedScope.size === 0) return false;
-    if (this.authorizedScope.has(target)) return true;
+  getAuthorizedScope(): string[] {
+    return Array.from(this.authorizedScope);
+  }
 
-    let hostname: string;
-    try {
-      hostname = new URL(target.includes('://') ? target : `https://${target}`).hostname;
-    } catch {
-      hostname = target;
-    }
-    return Array.from(this.authorizedScope).some((s) => {
-      if (s.startsWith('.')) return hostname.endsWith(s) || hostname === s.slice(1);
-      return hostname === s;
-    });
+  isInScope(target: string): boolean {
+    return isTargetInAuthorizedScope(target, this.getAuthorizedScope());
   }
 
   async checkGate(toolName: string, targetAddress?: string): Promise<RiskGateResult> {

@@ -431,6 +431,7 @@ async function createMission(tempest: Tempest): Promise<void> {
   const mission = tempest.mission.createMission({
     name,
     objectives: objectives.split(',').map((o: string) => o.trim()),
+    targets: tempest.targetEnv.getAllTargets().map((t) => t.address),
   });
   if (!mission) {
     showWarning('Mission creation blocked by governance (org-intent)');

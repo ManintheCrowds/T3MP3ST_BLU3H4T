@@ -232,7 +232,7 @@ export { KillChainPhase } from './types/index.js';
 export type { OpsecConfig, Finding, Credential, Target, DetectionEvent } from './types/index.js';
 
 import { OperatorCell, OperatorAgent, ARCHETYPE_PROFILES } from './operators/index.js';
-import { MissionControl, TaskQueue } from './mission/index.js';
+import { MissionControl, TaskQueue, createDefaultRoE } from './mission/index.js';
 import { TargetEnvironment } from './target/index.js';
 import { EvidenceVault } from './evidence/index.js';
 import { Arsenal, BUILTIN_TOOLS, EXTERNAL_TOOLS } from './arsenal/index.js';
@@ -511,8 +511,10 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     // Only mark "seeded" if a mission actually exists — otherwise generateTasksForTarget
     // no-ops and we'd falsely suppress the tick-loop seeding (leaving operators idle).
     this.targetEnv.on('target:added', (target) => {
-      if (this.mission.getActiveMission()) {
+      const activeMission = this.mission.getActiveMission();
+      if (activeMission) {
         this.mission.generateTasksForTarget(target.address);
+        this.mission.syncMissionTargets(activeMission.id, [target.address]);
         this.taskSeeded = true;
       }
     });
@@ -710,11 +712,19 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
     const targets = this.targetEnv.getAllTargets();
     const targetNames = targets.map(t => t.address).join(', ') || 'pending targets';
+    const targetAddresses = targets.map(t => t.address);
+
+    const missionRules = this.governance?.riskTiers.getAuthorizedScope();
+    const rules = missionRules && missionRules.length > 0
+      ? { ...createDefaultRoE(), scope: missionRules }
+      : undefined;
 
     const mission = this.mission.createMission({
       name: `${this.name} — Auto Mission`,
       description: `Automated mission for ${targetNames}`,
       objectives: ['Enumerate attack surface', 'Identify vulnerabilities', 'Validate findings'],
+      targets: targetAddresses,
+      rules,
     });
     if (!mission) {
       this.emit('governance:mission_blocked', { reason: 'createMission returned null (org-intent)' });
