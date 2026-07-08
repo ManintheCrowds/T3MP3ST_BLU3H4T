@@ -32,6 +32,19 @@ import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, type O
 import { ingestRepoToSourceContext, runWhiteboxAnalysis, resolveContainedRepoPath, RepoPathError } from './recon/whitebox.js';
 import { redactCredential } from './evidence/index.js';
 import dotenv from 'dotenv';
+import {
+  asRecord,
+  bountyCredentialsConfigured,
+  errorMessage,
+  execFailureOutput,
+  isNodeErrorWithCode,
+  isOperatorArchetype,
+  parseLLMProvider,
+  readOperationDraft,
+  type GeneralLlmRouteConfig,
+  type MissionFindingLedgerInput,
+  type ResolvedGeneralLlmConfig,
+} from './server-types.js';
 
 dotenv.config();
 
@@ -335,7 +348,7 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
   tempestCommand = new TempestCommand({
     name: missionName,
     llm: {
-      provider: provider as any,
+      provider: parseLLMProvider(provider),
       model,
       apiKey,
       maxTokens: 4096,
@@ -353,9 +366,9 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
 
   // Mirror each discovered mission finding into the persistent findingsLedger so the
   // Evidence Vault (/api/findings) reflects the run instead of showing 0 afterward.
-  tempestCommand.on('finding:discovered', ({ finding }) => {
+  tempestCommand.on('finding:discovered', ({ finding }: { finding: MissionFindingLedgerInput }) => {
     try {
-      upsertMissionFindingToLedger(finding as any, tempestCommand?.mission.getActiveMission()?.id);
+      upsertMissionFindingToLedger(finding, tempestCommand?.mission.getActiveMission()?.id);
     } catch (err) {
       console.error('[T3MP3ST] failed to persist mission finding to ledger:', err instanceof Error ? err.message : err);
     }
@@ -412,8 +425,8 @@ async function executeCommand(command: string, timeout = 30000): Promise<ToolRes
   try {
     const { stdout, stderr } = await execFileAsync(parsed.bin, parsed.args, { timeout, maxBuffer: 1024 * 1024 * 10 });
     return { success: true, output: stdout || stderr, duration: Date.now() - startTime };
-  } catch (error: any) {
-    return { success: false, output: error.stdout || '', error: error.message, duration: Date.now() - startTime };
+  } catch (error: unknown) {
+    return { success: false, output: execFailureOutput(error), error: errorMessage(error), duration: Date.now() - startTime };
   }
 }
 
@@ -1091,9 +1104,9 @@ async function loadPersistedState(): Promise<void> {
     replaceMapContents(memoryCapsule, state.memoryCapsule);
     replaceMapContents(memoryProposals, state.memoryProposals);
     console.log(`[T3MP3ST] State restored from ${file}`);
-  } catch (error: any) {
-    if (error?.code !== 'ENOENT') {
-      console.warn(`[T3MP3ST] State restore skipped: ${error.message || error}`);
+  } catch (error: unknown) {
+    if (!isNodeErrorWithCode(error, 'ENOENT')) {
+      console.warn(`[T3MP3ST] State restore skipped: ${errorMessage(error)}`);
     }
   }
 }
@@ -1173,8 +1186,8 @@ function createApprovalRequest(action: GuardAction, target: string, reason: stri
 }
 
 function operationAllowsLocalAction(body: Record<string, unknown>, action: GuardAction, target: string): boolean {
-  const operationDraft = body.operationDraft as Record<string, any> | undefined;
-  const scope = operationDraft?.scope as Record<string, any> | undefined;
+  const operationDraft = readOperationDraft(body);
+  const scope = operationDraft?.scope;
   if (!operationDraft || !scope || scope.authorized !== true) return false;
   if (!isLocalOrPrivateTarget(target)) return false;
   if (['autonomous_execution', 'command_execution', 'network_request', 'mission_execution', 'model_call'].includes(action)) return false;
@@ -6036,7 +6049,7 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
         try {
           const op = cmd.spawnOperator(callsign, archetype);
           spawnedOps.push({ id: op.id, callsign: op.callsign, archetype });
-        } catch (e: any) {
+        } catch {
           // Duplicate callsign — skip
           console.warn(`[T3MP3ST] Skipping duplicate operator: ${callsign}`);
         }
@@ -6061,7 +6074,7 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
 
     broadcastEvent('mission:started', {
       name,
-      targets: targets.map((t: any) => t.host || t),
+      targets: targets.map((t: unknown) => normalizeTargetValue(t)),
       operators: spawnedOps,
       timestamp: Date.now(),
     });
@@ -6074,9 +6087,9 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
       status: cmd.getStatus(),
       ...(whitebox ? { whitebox } : {}),
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[T3MP3ST] Mission start failed:', error);
-    res.status(500).json({ error: error.message || 'Failed to start mission' });
+    res.status(500).json({ error: errorMessage(error) || 'Failed to start mission' });
   }
 });
 
@@ -6121,9 +6134,9 @@ app.post('/api/whitebox/analyze', async (req: Request, res: Response): Promise<v
       maxRounds: typeof maxRounds === 'number' ? maxRounds : undefined,
     });
     res.json(result);
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[T3MP3ST] White-box analysis failed:', error);
-    res.status(500).json({ error: error?.message || 'White-box analysis failed' });
+    res.status(500).json({ error: errorMessage(error) || 'White-box analysis failed' });
   }
 });
 
@@ -6142,9 +6155,8 @@ function handleMissionReport(req: Request, res: Response): void {
   try {
     const report = cmd.generateReport(missionId);
     res.json({ success: true, missionId: missionId || null, report });
-  } catch (error: any) {
-    // generateReport throws when no mission is found for reporting.
-    res.status(404).json({ error: error?.message || 'No mission found for reporting' });
+  } catch (error: unknown) {
+    res.status(404).json({ error: errorMessage(error) || 'No mission found for reporting' });
   }
 }
 app.get('/api/mission/report', (req: Request, res: Response) => handleMissionReport(req, res));
@@ -6303,11 +6315,15 @@ app.post('/api/operators/spawn', (req: Request, res: Response): void => {
   const effectiveCallsign = callsign || (archetype.charAt(0).toUpperCase() + archetype.slice(1) + '-' + Date.now().toString(36));
 
   try {
-    const op = cmd.spawnOperator(effectiveCallsign, archetype as OperatorArchetype);
+    if (!isOperatorArchetype(archetype)) {
+      res.status(400).json({ error: 'Invalid archetype' });
+      return;
+    }
+    const op = cmd.spawnOperator(effectiveCallsign, archetype);
     broadcastEvent('operator:spawned', { id: op.id, callsign: op.callsign, archetype });
     res.json({ success: true, operator: op.getSummary() });
-  } catch (error: any) {
-    res.status(400).json({ error: error.message });
+  } catch (error: unknown) {
+    res.status(400).json({ error: errorMessage(error) });
   }
 });
 
@@ -6422,12 +6438,12 @@ app.post('/api/operators/:id/task', async (req: Request, res: Response): Promise
       output: (result.output || '').substring(0, 2000),
       ...(result.findings && { findings: result.findings }),
     });
-  }).catch((error: any) => {
+  }).catch((error: unknown) => {
     broadcastEvent('task:failed', {
       taskId: task.id,
       operatorId: operator.id,
       callsign: operator.callsign,
-      error: error.message,
+      error: errorMessage(error),
     });
   });
 
@@ -6475,38 +6491,29 @@ function providerNeedsApiKey(provider: string): boolean {
 // the key in the body, so we accept it to avoid breaking it. Moving to a header
 // needs a coordinated UI change and is out of scope. The body key is only ever
 // reachable from the local operator (loopback bind + origin guard).
-function resolveGeneralLLMConfig(provider: string, model: string | undefined, apiKey: string | undefined): {
-  provider: any;
-  model: string;
-  apiKey?: string;
-  maxTokens: number;
-  temperature: number;
-  timeout: number;
-} {
-  const selectedProvider = provider || 'openrouter';
-  // Local-agent backends (Claude Code / Codex / Hermes via the connector) need NO API key — the
-  // agent uses its own login. The agent id (codex|claude|hermes) travels in `model`.
+function resolveGeneralLLMConfig(provider: string, model: string | undefined, apiKey: string | undefined): ResolvedGeneralLlmConfig {
+  const selectedProvider = parseLLMProvider(provider || 'openrouter');
   if (selectedProvider === 'local-agent') {
     return {
-      provider: 'local-agent' as any,
+      provider: 'local-agent',
       model: model || 'codex',
       maxTokens: 8192,
       temperature: 0.4,
       timeout: Number(process.env.TEMPEST_GENERAL_TIMEOUT_MS) || 300000,
     };
   }
-  const baseConfig = config.getLLMConfig(selectedProvider as any, model);
+  const baseConfig = config.getLLMConfig(selectedProvider, model);
   const effectiveKey = apiKey || baseConfig.apiKey;
   if (providerNeedsApiKey(selectedProvider) && !effectiveKey) {
     throw new Error('API key required — pass apiKey in body or configure on server');
   }
   return {
-    provider: selectedProvider as any,
+    provider: selectedProvider,
     model: model || baseConfig.model,
     apiKey: effectiveKey,
     maxTokens: 8192,
     temperature: 0.4,
-    timeout: Number(process.env.TEMPEST_GENERAL_TIMEOUT_MS) || 300000, // General planning needs room (was a hardcoded 60s); override via env
+    timeout: Number(process.env.TEMPEST_GENERAL_TIMEOUT_MS) || 300000,
   };
 }
 
@@ -6518,8 +6525,8 @@ function resolveGeneralLLMConfig(provider: string, model: string | undefined, ap
  */
 function bringUpMissionFromPlan(
   execConfig: { missionName: string; targets: string[]; operators: string[] },
-  generalConfig: { apiKey?: string; provider: any; model: string },
-): { spawnedOps: Array<{ id: string; callsign: string; archetype: string }>; status: any } {
+  generalConfig: GeneralLlmRouteConfig,
+): { spawnedOps: Array<{ id: string; callsign: string; archetype: string }>; status: ReturnType<TempestCommand['getStatus']> } {
   const cmd = createTempestCommandInstance(execConfig.missionName, generalConfig.apiKey, generalConfig.provider, generalConfig.model);
   for (const target of execConfig.targets) {
     if (target.startsWith('http://') || target.startsWith('https://')) cmd.targetEnv.addTarget(createTargetFromUrl(target));
@@ -6532,7 +6539,11 @@ function bringUpMissionFromPlan(
     const count = (operatorCounts.get(archetype) || 0) + 1;
     operatorCounts.set(archetype, count);
     const callsign = archetype.charAt(0).toUpperCase() + archetype.slice(1) + `-G${count}`;
-    try { const op = cmd.spawnOperator(callsign, archetype as any); spawnedOps.push({ id: op.id, callsign: op.callsign, archetype }); } catch { /* dup */ }
+    try {
+      if (!isOperatorArchetype(archetype)) continue;
+      const op = cmd.spawnOperator(callsign, archetype);
+      spawnedOps.push({ id: op.id, callsign: op.callsign, archetype });
+    } catch { /* dup */ }
   }
   cmd.start();
   if (activeGeneral) activeGeneral.startMonitoring(cmd);
@@ -6598,11 +6609,11 @@ async function runCodexExecReadinessProbe(command: string): Promise<{ stdout: st
 /**
  * GET /api/codex/status — Check whether local Codex CLI/account auth can be used.
  */
-function codexUnavailable(res: Response, error: any): void {
+function codexUnavailable(res: Response, error: unknown): void {
   res.status(503).json({
     available: false,
     provider: 'codex',
-    error: error?.message || 'Codex CLI unavailable',
+    error: errorMessage(error) || 'Codex CLI unavailable',
     hint: 'Install/login to Codex CLI, then retry. T3MP3ST does not need your account token.',
   });
 }
@@ -6624,12 +6635,12 @@ app.get('/api/codex/status', async (_req: Request, res: Response): Promise<void>
       executionMode: 'codex exec --ephemeral --sandbox read-only --ask-for-approval never',
       execProbe: 'POST /api/codex/probe',   // exec self-test moved off GET (B-04)
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     codexUnavailable(res, error);
   }
 });
 
-// B-04: Codex exec readiness self-test — POST (not GET) so the cross-origin CSRF
+// B-04: Codex exec readiness self-test
 // guard covers it; a drive-by page can't trigger `codex exec` via a bare GET.
 // Returns availability + version plus the exec self-test result.
 app.post('/api/codex/probe', async (_req: Request, res: Response): Promise<void> => {
@@ -6648,13 +6659,14 @@ app.post('/api/codex/probe', async (_req: Request, res: Response): Promise<void>
       const combined = `${probe.stdout || ''}\n${probe.stderr || ''}`;
       payload.execReady = combined.includes('T3MP3ST_CODEX_READY');
       payload.selfTest = payload.execReady ? 'passed' : 'completed_without_ready_marker';
-    } catch (probeError: any) {
+    } catch (probeError: unknown) {
       payload.execReady = false;
       payload.selfTest = 'failed';
-      payload.executionError = String(probeError?.stderr || probeError?.message || probeError).trim().slice(0, 1000);
+      const probeRecord = typeof probeError === 'object' && probeError !== null ? probeError as { stderr?: unknown; message?: unknown } : {};
+      payload.executionError = String(probeRecord.stderr || probeRecord.message || probeError).trim().slice(0, 1000);
     }
     res.json(payload);
-  } catch (error: any) {
+  } catch (error: unknown) {
     codexUnavailable(res, error);
   }
 });
@@ -6694,13 +6706,13 @@ app.post('/api/general/plan', async (req: Request, res: Response): Promise<void>
     activeGeneral = new OpGeneral(generalLLM);
 
     // Wire General events to SSE
-    activeGeneral.on('general:planning', (data) => broadcastEvent('general:planning', data as any));
-    activeGeneral.on('general:plan_ready', (data) => broadcastEvent('general:plan_ready', data as any));
-    activeGeneral.on('general:review', (data) => broadcastEvent('general:review', data as any));
-    activeGeneral.on('general:plan_failed', (data) => broadcastEvent('general:plan_failed', data as any));
-    activeGeneral.on('general:sitrep', (data) => broadcastEvent('general:sitrep', data as any));
-    activeGeneral.on('general:adapting', (data) => broadcastEvent('general:adapting', data as any));
-    activeGeneral.on('general:assessment', (data) => broadcastEvent('general:assessment', data as any));
+    activeGeneral.on('general:planning', (data) => broadcastEvent('general:planning', asRecord(data)));
+    activeGeneral.on('general:plan_ready', (data) => broadcastEvent('general:plan_ready', asRecord(data)));
+    activeGeneral.on('general:review', (data) => broadcastEvent('general:review', asRecord(data)));
+    activeGeneral.on('general:plan_failed', (data) => broadcastEvent('general:plan_failed', asRecord(data)));
+    activeGeneral.on('general:sitrep', (data) => broadcastEvent('general:sitrep', asRecord(data)));
+    activeGeneral.on('general:adapting', (data) => broadcastEvent('general:adapting', asRecord(data)));
+    activeGeneral.on('general:assessment', (data) => broadcastEvent('general:assessment', asRecord(data)));
 
     const directive: Directive = {
       objective,
@@ -6721,9 +6733,9 @@ app.post('/api/general/plan', async (req: Request, res: Response): Promise<void>
       review,
       missionGate: plan.missionGate,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[T3MP3ST] General planning failed:', error);
-    const message = error.message || 'Planning failed';
+    const message = errorMessage(error) || 'Planning failed';
     res.status(/API key required|Unknown provider/.test(message) ? 400 : 500).json({ error: message });
   }
 });
@@ -6755,8 +6767,8 @@ app.post('/api/general/execute', async (req: Request, res: Response): Promise<vo
   let generalConfig;
   try {
     generalConfig = resolveGeneralLLMConfig(provider, model, apiKey);
-  } catch (error: any) {
-    res.status(400).json({ error: error.message || 'API key required' });
+  } catch (error: unknown) {
+    res.status(400).json({ error: errorMessage(error) || 'API key required' });
     return;
   }
 
@@ -6804,6 +6816,7 @@ app.post('/api/general/execute', async (req: Request, res: Response): Promise<vo
       operatorCounts.set(archetype, count);
       const callsign = archetype.charAt(0).toUpperCase() + archetype.slice(1) + `-G${count}`;
       try {
+        if (!isOperatorArchetype(archetype)) continue;
         const op = cmd.spawnOperator(callsign, archetype);
         spawnedOps.push({ id: op.id, callsign: op.callsign, archetype });
       } catch {
@@ -6841,9 +6854,9 @@ app.post('/api/general/execute', async (req: Request, res: Response): Promise<vo
       opsecLevel: execConfig.opsecLevel,
       status: cmd.getStatus(),
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[T3MP3ST] General execution failed:', error);
-    res.status(500).json({ error: error.message || 'Execution failed' });
+    res.status(500).json({ error: errorMessage(error) || 'Execution failed' });
   }
 });
 
@@ -6873,8 +6886,8 @@ app.post('/api/general/auto', async (req: Request, res: Response): Promise<void>
   let generalConfig;
   try {
     generalConfig = resolveGeneralLLMConfig(provider, model, apiKey);
-  } catch (error: any) {
-    res.status(400).json({ error: error.message || 'API key required' });
+  } catch (error: unknown) {
+    res.status(400).json({ error: errorMessage(error) || 'API key required' });
     return;
   }
 
@@ -6890,12 +6903,12 @@ app.post('/api/general/auto', async (req: Request, res: Response): Promise<void>
     activeGeneral = new OpGeneral(generalLLM);
 
     // Wire events
-    activeGeneral.on('general:planning', (data) => broadcastEvent('general:planning', data as any));
-    activeGeneral.on('general:plan_ready', (data) => broadcastEvent('general:plan_ready', data as any));
-    activeGeneral.on('general:review', (data) => broadcastEvent('general:review', data as any));
-    activeGeneral.on('general:sitrep', (data) => broadcastEvent('general:sitrep', data as any));
-    activeGeneral.on('general:adapting', (data) => broadcastEvent('general:adapting', data as any));
-    activeGeneral.on('general:assessment', (data) => broadcastEvent('general:assessment', data as any));
+    activeGeneral.on('general:planning', (data) => broadcastEvent('general:planning', asRecord(data)));
+    activeGeneral.on('general:plan_ready', (data) => broadcastEvent('general:plan_ready', asRecord(data)));
+    activeGeneral.on('general:review', (data) => broadcastEvent('general:review', asRecord(data)));
+    activeGeneral.on('general:sitrep', (data) => broadcastEvent('general:sitrep', asRecord(data)));
+    activeGeneral.on('general:adapting', (data) => broadcastEvent('general:adapting', asRecord(data)));
+    activeGeneral.on('general:assessment', (data) => broadcastEvent('general:assessment', asRecord(data)));
 
     // Phase 1: Plan
     broadcastEvent('general:planning', { objective });
@@ -6947,6 +6960,7 @@ app.post('/api/general/auto', async (req: Request, res: Response): Promise<void>
       operatorCounts.set(archetype, count);
       const callsign = archetype.charAt(0).toUpperCase() + archetype.slice(1) + `-G${count}`;
       try {
+        if (!isOperatorArchetype(archetype)) continue;
         const op = cmd.spawnOperator(callsign, archetype);
         spawnedOps.push({ id: op.id, callsign: op.callsign, archetype });
       } catch { /* skip duplicate */ }
@@ -6982,9 +6996,9 @@ app.post('/api/general/auto', async (req: Request, res: Response): Promise<void>
       },
       status: cmd.getStatus(),
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[T3MP3ST] General auto mode failed:', error);
-    res.status(500).json({ error: error.message || 'Auto mode failed' });
+    res.status(500).json({ error: errorMessage(error) || 'Auto mode failed' });
   }
 });
 
@@ -7028,8 +7042,8 @@ app.post('/api/general/sitrep', async (_req: Request, res: Response): Promise<vo
   try {
     const sitrep = await activeGeneral.produceSitrep(cmd);
     res.json({ success: true, sitrep });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ error: errorMessage(error) });
   }
 });
 
@@ -7051,8 +7065,8 @@ app.post('/api/general/assess', async (_req: Request, res: Response): Promise<vo
   try {
     const assessment = await activeGeneral.produceAssessment(cmd);
     res.json({ success: true, assessment });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    res.status(500).json({ error: errorMessage(error) });
   }
 });
 
@@ -7089,8 +7103,8 @@ app.post('/api/attack-graph', (req: Request, res: Response): void => {
         prompt: attackGraphReconPrompt(target, family),
       },
     });
-  } catch (error: any) {
-    res.status(400).json({ error: error.message });
+  } catch (error: unknown) {
+    res.status(400).json({ error: errorMessage(error) });
   }
 });
 
@@ -7102,8 +7116,8 @@ app.post('/api/attack-graph/ingest', (req: Request, res: Response): void => {
   try {
     const graph = validateAttackGraph(req.body?.graph ?? req.body);
     res.json({ graph });
-  } catch (error: any) {
-    res.status(400).json({ error: error.message });
+  } catch (error: unknown) {
+    res.status(400).json({ error: errorMessage(error) });
   }
 });
 
@@ -7137,8 +7151,8 @@ app.post('/api/admiral/converse', async (req: Request, res: Response): Promise<v
     const admiral = new Admiral(admiralLLM);
     const turn = await admiral.converse(messages);
     res.json(turn);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Admiral converse failed' });
+  } catch (error: unknown) {
+    res.status(500).json({ error: errorMessage(error) || 'Admiral converse failed' });
   }
 });
 
@@ -7171,8 +7185,8 @@ app.post('/api/admiral/suggest', async (req: Request, res: Response): Promise<vo
     const admiral = new Admiral(admiralLLM);
     const advice = await admiral.suggest(prompt, failureSignal);
     res.json(advice);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Admiral suggest failed' });
+  } catch (error: unknown) {
+    res.status(500).json({ error: errorMessage(error) || 'Admiral suggest failed' });
   }
 });
 
@@ -7203,8 +7217,8 @@ app.post('/api/admiral/launch', async (req: Request, res: Response): Promise<voi
     let generalConfig;
     try {
       generalConfig = resolveGeneralLLMConfig(provider, model, apiKey);
-    } catch (error: any) {
-      res.status(400).json({ error: error.message || 'API key required' });
+    } catch (error: unknown) {
+      res.status(400).json({ error: errorMessage(error) || 'API key required' });
       return;
     }
 
@@ -7219,10 +7233,10 @@ app.post('/api/admiral/launch', async (req: Request, res: Response): Promise<voi
     // Stop the outgoing General's monitor before dropping the reference (setInterval leak).
     if (activeGeneral) activeGeneral.stopMonitoring();
     activeGeneral = new OpGeneral(generalLLM);
-    activeGeneral.on('general:planning', (data) => broadcastEvent('general:planning', data as any));
-    activeGeneral.on('general:plan_ready', (data) => broadcastEvent('general:plan_ready', data as any));
-    activeGeneral.on('general:review', (data) => broadcastEvent('general:review', data as any));
-    activeGeneral.on('general:sitrep', (data) => broadcastEvent('general:sitrep', data as any));
+    activeGeneral.on('general:planning', (data) => broadcastEvent('general:planning', asRecord(data)));
+    activeGeneral.on('general:plan_ready', (data) => broadcastEvent('general:plan_ready', asRecord(data)));
+    activeGeneral.on('general:review', (data) => broadcastEvent('general:review', asRecord(data)));
+    activeGeneral.on('general:sitrep', (data) => broadcastEvent('general:sitrep', asRecord(data)));
 
     broadcastEvent('admiral:launch', { brief, fidelity: brief.fidelity });
     const plan = await activeGeneral.planOperation(directive);
@@ -7248,8 +7262,8 @@ app.post('/api/admiral/launch', async (req: Request, res: Response): Promise<voi
         ? `Mission LIVE — ${broughtUp.spawnedOps.length} operator(s) running. Follow /api/events.`
         : 'Plan produced no operators to spawn — nothing is running.',
     });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Admiral launch failed' });
+  } catch (error: unknown) {
+    res.status(500).json({ error: errorMessage(error) || 'Admiral launch failed' });
   }
 });
 
@@ -7276,7 +7290,7 @@ app.get('/api/bounty/platforms', (_req: Request, res: Response) => {
 
 app.post('/api/bounty/format', (req: Request, res: Response) => {
   try {
-    const { platform, programHandle, finding } = req.body as { platform: BountyPlatform; programHandle: string; finding: Record<string, any> };
+    const { platform, programHandle, finding } = req.body as { platform: BountyPlatform; programHandle: string; finding: Record<string, unknown> };
     if (!platform || !programHandle || !finding) {
       res.status(400).json({ error: 'Required: platform, programHandle, finding' });
       return;
@@ -7285,15 +7299,15 @@ app.post('/api/bounty/format', (req: Request, res: Response) => {
     const bountyFinding = findingToBountyFinding(finding);
     const report = connector.formatReport(bountyFinding, programHandle);
     res.json({ report });
-  } catch (error: any) {
-    res.status(400).json({ error: error.message });
+  } catch (error: unknown) {
+    res.status(400).json({ error: errorMessage(error) });
   }
 });
 
 app.post('/api/bounty/submit', async (req: Request, res: Response) => {
   try {
     const { platform, programHandle, finding, dryRun } = req.body as {
-      platform: BountyPlatform; programHandle: string; finding: Record<string, any>; dryRun?: boolean;
+      platform: BountyPlatform; programHandle: string; finding: Record<string, unknown>; dryRun?: boolean;
     };
     if (!platform || !programHandle || !finding) {
       res.status(400).json({ error: 'Required: platform, programHandle, finding' });
@@ -7306,8 +7320,8 @@ app.post('/api/bounty/submit', async (req: Request, res: Response) => {
     const report = connector.formatReport(bountyFinding, programHandle);
     const result = await connector.submit(report, platformCreds, { dryRun: dryRun !== false });
     res.json({ result, report });
-  } catch (error: any) {
-    res.status(400).json({ error: error.message });
+  } catch (error: unknown) {
+    res.status(400).json({ error: errorMessage(error) });
   }
 });
 
@@ -7320,8 +7334,8 @@ app.get('/api/bounty/programs/:platform', async (req: Request, res: Response) =>
     const connector = getConnector(platform);
     const programs = await connector.listPrograms(query, platformCreds);
     res.json({ programs });
-  } catch (error: any) {
-    res.status(400).json({ error: error.message });
+  } catch (error: unknown) {
+    res.status(400).json({ error: errorMessage(error) });
   }
 });
 
@@ -7329,7 +7343,7 @@ app.get('/api/bounty/credentials', (_req: Request, res: Response) => {
   const creds = loadBountyCredentials(process.cwd());
   const masked: Record<string, { platform: string; configured: boolean }> = {};
   for (const [k, v] of Object.entries(creds)) {
-    masked[k] = { platform: k, configured: Boolean((v as any).apiKey || (v as any).apiIdentifier || (v as any).walletAddress) };
+    masked[k] = { platform: k, configured: bountyCredentialsConfigured(v) };
   }
   res.json({ credentials: masked });
 });

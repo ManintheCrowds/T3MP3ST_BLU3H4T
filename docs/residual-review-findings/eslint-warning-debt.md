@@ -1,8 +1,10 @@
-# ESLint warning debt (TCI-4)
+# ESLint warning debt (TCI-4 + EP server pass)
 
 **Date:** 2026-07-07  
 **Repo:** [ManintheCrowds/T3MP3ST_BLU3H4T](https://github.com/ManintheCrowds/T3MP3ST_BLU3H4T)  
 **Baseline (pre-TCI-4):** 176 warnings, 0 errors  
+**Post-TCI-4:** 154 warnings (101 in `server.ts`)  
+**Post-EP server pass:** **91 warnings** (**34** in `server.ts`; **−67** in file, **−63** repo-wide)  
 **Related:** [3146cdd-ci-fix.md](./3146cdd-ci-fix.md)
 
 ## Summary by rule (baseline)
@@ -17,7 +19,7 @@
 
 | File | Warnings | Status |
 |------|----------|--------|
-| `src/server.ts` | ~101 | **Deferred** — 7k-line API surface; non-blocking in CI |
+| `src/server.ts` | ~101 → **34** | **Partial** — `server-types.ts` + mission/general/admiral/codex/bounty clusters (EP pass) |
 | `src/general/index.ts` | ~18 | Deferred — OpGeneral JSON/plan typing |
 | `src/__tests__/code-ingest.test.ts` | ~12 | Deferred — test fixtures |
 | `src/__tests__/governance-gates.test.ts` | ~9 | **Fixed** in TCI-4 (requireMission helper) |
@@ -29,6 +31,12 @@
 - Fixed high-signal warnings outside `server.ts` in small modules (unused vars, non-null assertions, `any` in setup/cli).
 - Did **not** add blanket `eslint-disable` for `server.ts`.
 - CI gate `npm run lint` remains **warnings-tolerant** (errors block; warnings do not).
+
+## EP server pass (2026-07-07)
+
+- Added [`src/server-types.ts`](../../src/server-types.ts): `errorMessage`, `asRecord`, `parseLLMProvider`, approval/operation types, `bountyCredentialsConfigured`, operator archetype guard.
+- Typed mission start, General/Admiral routes, Codex probes, bounty handlers — `unknown` + guards instead of `any` in those clusters.
+- **Verification:** `npm run lint` (91 warnings), `npm run typecheck`, `npm test` (138 passed).
 
 ## Recommended future work
 
