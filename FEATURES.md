@@ -88,7 +88,7 @@
 - [x] Claude Opus 4.5, Sonnet 4.5, Sonnet 4
 - [x] GPT-4o, GPT-4 Turbo, o1
 - [x] Gemini 3 Pro, Gemini 3 Flash, Gemini 2.5 Flash
-- [x] Grok 4, Grok 4 Fast, Grok 4.1 Fast
+- [ ] Grok / xAI models — **blocked** for live inference (2026-07-14 harness ban; see MiscRepos `xai-grok-disabled.mdc`)
 - [x] DeepSeek R1, DeepSeek V3
 - [x] Llama 3.3 70B
 - [x] Mistral Large

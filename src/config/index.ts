@@ -247,31 +247,9 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       maxOutput: 8192,
       capabilities: ['reasoning', 'code', 'analysis', 'vision'],
     },
-    // xAI (Dec 2025)
-    {
-      id: 'x-ai/grok-4',
-      name: 'Grok 4',
-      provider: 'xAI',
-      contextWindow: 256000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision'],
-    },
-    {
-      id: 'x-ai/grok-4-fast',
-      name: 'Grok 4 Fast',
-      provider: 'xAI',
-      contextWindow: 2000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'fast'],
-    },
-    {
-      id: 'x-ai/grok-4.1-fast',
-      name: 'Grok 4.1 Fast',
-      provider: 'xAI',
-      contextWindow: 2000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
-    },
+    // xAI — DISABLED 2026-07-14 (harness ban: exfil research + operator ethics).
+    // Do not re-add live model entries without APPROVAL_NEEDED: xAI/Grok live contact.
+    // Was: x-ai/grok-4, x-ai/grok-4-fast, x-ai/grok-4.1-fast
     // Z.AI (Dec 2025)
     {
       id: 'z-ai/glm-4.7',
