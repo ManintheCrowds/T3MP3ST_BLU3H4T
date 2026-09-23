@@ -87,13 +87,15 @@ If a turn trips cyber_policy: stop, strip RE-dense pastes, continue with contain
 
 ## Operator enable checklist
 
-1. Merge seam PRs / pull `ghidra_mcp_gated.py`.
+1. Land seam PRs (MiscRepos #56, T3MP3ST #1) / pull latest `ghidra_mcp_gated.py`.
 2. Install Ghidra + GhidraMCP **plugin** (HTTP API); pin compatible versions.
 3. Confirm plugin **127.0.0.1** only; pick free port if 8080 busy → set `GHIDRA_MCP_SERVER`.
 4. Chat: `APPROVAL_NEEDED: ghidra-mcp enable-mcp — workspace only, gated server, no global mirror, no OpenClaw`.
-5. Merge [`.cursor/mcp.ghidra.example.json`](../../.cursor/mcp.ghidra.example.json) `ghidra` block into workspace mcp.json (**leave APPROVE unset**).
-6. Per session: chat approval → set `GHIDRA_MCP_APPROVE=1` (and MUTATE if renaming) → analyze → unset.
+5. Paste the **`ghidra`** object from [`.cursor/mcp.ghidra.enable.fragment.json`](../../.cursor/mcp.ghidra.enable.fragment.json) under `mcpServers` in **workspace** `.cursor/mcp.json` (**do not** set `GHIDRA_MCP_APPROVE` in the fragment).
+6. Per session: chat approval → set `GHIDRA_MCP_APPROVE=1` (and `MUTATE=1` if renaming) on that server env → analyze → unset.
 7. Ungated smoke: `ghidra_gate_status`.
+
+Alternate example (C: Dell paths): [`.cursor/mcp.ghidra.example.json`](../../.cursor/mcp.ghidra.example.json).
 
 ## Harness audit (updated)
 
