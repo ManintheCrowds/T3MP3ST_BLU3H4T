@@ -144,3 +144,4 @@ The existing `src/opsec/index.ts` OpsecController tracks:
 | SIEM connector (ELK) | P1 | External ELK stack |
 | Anomaly engine | P1 | Baseline data collection |
 | AI agent detector | P0 | See Phase 4 design |
+| Binary static-analysis sidecar (GhidraMCP + SCP) | P2 | Opt-in High; see [GHIDRA_MCP_SCP_SEAM.md](GHIDRA_MCP_SCP_SEAM.md) — not a core log/SIEM path |

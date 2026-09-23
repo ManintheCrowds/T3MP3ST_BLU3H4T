@@ -429,6 +429,7 @@ Canonical mapping: [PLINY_DEFENSIVE_RENAME.md](docs/PLINY_DEFENSIVE_RENAME.md) �
 - [ ] Video recordings
 - [ ] Memory dumps
 - [ ] Disk images
+- [ ] Contained binary static-analysis notes (GhidraMCP → SCP → vault; opt-in High — [docs/GHIDRA_MCP_SCP_SEAM.md](docs/GHIDRA_MCP_SCP_SEAM.md))
 
 ### Severity Levels
 - [x] Critical (score: 10)
