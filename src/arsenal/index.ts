@@ -31,6 +31,7 @@ const dnsReverse = promisify(dns.reverse);
 
 import { CVE_DATABASE } from '../stubs/index.js';
 import type { CVEEntry } from '../stubs/index.js';
+import { createTsharkExternalTools } from './tshark-tools.js';
 
 // =============================================================================
 // PORT SCANNING UTILITY
@@ -3091,4 +3092,5 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       };
     },
   },
+  ...createTsharkExternalTools({ isToolAvailable, runSubprocess }),
 ];

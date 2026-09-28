@@ -284,6 +284,12 @@
 - [ ] metasploit integration
 - [ ] burp suite integration
 
+### Packet analysis (Wireshark / tshark)
+- [ ] `tshark_pcap_summary` — protocol hierarchy summary of an existing pcap (defensive)
+- [ ] `tshark_live_capture` — short allowlisted-interface capture (max 30s; `T3MP3ST_TSHARK_IFACES`)
+- [ ] Catalog adapters: `tshark` (receipt_required), `wireshark` (catalog_only GUI)
+- [ ] Import pcap into Evidence Vault (follow-up)
+
 ---
 
 ## 7. Pliny Specials (defensive names — EP-3)

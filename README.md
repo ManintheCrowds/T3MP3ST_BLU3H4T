@@ -149,8 +149,9 @@ Governance is **enabled by default** on the War Room server (SCP, org-intent, HI
 | `ORG_INTENT_PATH` | built-in defaults | Path to org-intent policy JSON |
 | `T3MP3ST_AUTHORIZED_SCOPE` | none | Comma-separated authorized targets (e.g. `10.0.0.0/24,.example.com`) |
 | `T3MP3ST_HITL_AUTO_LOW` | on | Set to `0` to require HITL for low-tier tools |
+| `T3MP3ST_TSHARK_IFACES` | none | Comma-separated NICs allowed for `tshark_live_capture` (e.g. `lo,eth0`); empty fails closed |
 
-For production deployments, set `T3MP3ST_AUTHORIZED_SCOPE` so med-tier tools can scope-check authorized targets (empty scope fails closed for active probes).
+For production deployments, set `T3MP3ST_AUTHORIZED_SCOPE` so med-tier tools can scope-check authorized targets (empty scope fails closed for active probes). Live packet capture is optional and gated by `T3MP3ST_TSHARK_IFACES` — never ungated `-i`.
 
 Connect a local agent (Claude Code / Codex / Hermes) in Settings, or set an API key:
 
