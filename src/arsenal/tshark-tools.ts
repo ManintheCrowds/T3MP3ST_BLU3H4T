@@ -21,7 +21,7 @@ export type SanitizeErr = { ok: false; error: string };
 export function sanitizeDisplayFilter(
   filter: string | undefined,
 ): SanitizeOk<'filter'> | SanitizeErr {
-  if (filter == null || filter === '') return { ok: true, filter: '' };
+  if (filter === undefined || filter === null || filter === '') return { ok: true, filter: '' };
   if (typeof filter !== 'string') return { ok: false, error: 'filter must be a string' };
   const trimmed = filter.trim();
   if (trimmed.length > TSHARK_MAX_FILTER_LEN) {
@@ -59,7 +59,7 @@ export function buildPcapSummaryArgv(opts: {
   const filtRes = sanitizeDisplayFilter(opts.displayFilter ?? '');
   if (!filtRes.ok) return filtRes;
 
-  let count = opts.packetCount ?? 200;
+  const count = opts.packetCount ?? 200;
   if (!Number.isInteger(count) || count < 1 || count > 5000) {
     return { ok: false, error: 'packet_count must be integer 1..5000' };
   }
@@ -90,7 +90,7 @@ export function buildLiveCaptureArgv(opts: {
   if (typeof opts.iface !== 'string' || !allow.includes(opts.iface)) {
     return { ok: false, error: 'interface not on allowlist' };
   }
-  let duration = opts.durationSec ?? 10;
+  const duration = opts.durationSec ?? 10;
   if (!Number.isInteger(duration) || duration < 1 || duration > TSHARK_MAX_LIVE_SECONDS) {
     return { ok: false, error: `duration_sec must be 1..${TSHARK_MAX_LIVE_SECONDS}` };
   }
@@ -164,7 +164,8 @@ export function createTsharkExternalTools(deps: {
         }
         const pcapPath = String(context.parameters.pcap_path ?? '');
         const displayFilter =
-          context.parameters.display_filter == null
+          context.parameters.display_filter === undefined ||
+          context.parameters.display_filter === null
             ? undefined
             : String(context.parameters.display_filter);
         const packetCount = asInt(context.parameters.packet_count, 200);
@@ -212,7 +213,8 @@ export function createTsharkExternalTools(deps: {
         const iface = String(context.parameters.iface ?? '');
         const durationSec = asInt(context.parameters.duration_sec, 10);
         const displayFilter =
-          context.parameters.display_filter == null
+          context.parameters.display_filter === undefined ||
+          context.parameters.display_filter === null
             ? undefined
             : String(context.parameters.display_filter);
         const allowlist = parseIfaceAllowlist(process.env.T3MP3ST_TSHARK_IFACES);
