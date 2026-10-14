@@ -7,10 +7,22 @@
 import { EventEmitter } from 'eventemitter3';
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
+import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { promisify } from 'util';
 import * as net from 'net';
 import * as dns from 'dns';
 import * as tls from 'tls';
+import { ApprovalController, isGatedRisk, type ApprovalRequest } from './approval.js';
+import { classifySubdomainTakeover, renderTakeoverReport } from './takeover.js';
+import { browserProbeTool } from './browser.js';
+import { usernameSearchTool, telegramLookupTool, emailFormatTool, ipInfoTool } from './social-osint.js';
+import { idorProbeTool } from './idor.js';
+import { jsAnalyzeTool } from './js-analyze.js';
+import { kevCheckTool } from './kev.js';
+import { binarySinkScanTool } from './binary.js';
+import { r2AnalyzeTool } from './r2-analyze.js';
 
 const execFileAsync = promisify(execFile);
 import type {
@@ -19,8 +31,11 @@ import type {
   ToolResult,
   Target,
   LLMToolDefinition,
+  RiskTier,
 } from '../types/index.js';
 import type { SCPClient } from '../governance/scp-client.js';
+import { ToolError, ToolErrorCategory } from '../types/index.js';
+import { validateToolArgs, buildJsonSchema, assertSchemaDepth } from '../validation/index.js';
 
 const dnsResolve = promisify(dns.resolve);
 const dnsResolve4 = promisify(dns.resolve4);
@@ -28,6 +43,7 @@ const dnsResolveMx = promisify(dns.resolveMx);
 const dnsResolveTxt = promisify(dns.resolveTxt);
 const dnsResolveNs = promisify(dns.resolveNs);
 const dnsReverse = promisify(dns.reverse);
+const dnsResolveCname = promisify(dns.resolveCname);
 
 import { CVE_DATABASE } from '../stubs/index.js';
 import type { CVEEntry } from '../stubs/index.js';
@@ -62,6 +78,115 @@ async function checkPort(host: string, port: number, timeout: number = 2000): Pr
 }
 
 // =============================================================================
+// TARGET HEADER INJECTION
+// =============================================================================
+
+interface TargetHeaderConfig {
+  origin: string;
+  headers: Headers;
+}
+
+const FORBIDDEN_TARGET_HEADERS = new Set([
+  'connection', 'content-length', 'host', 'proxy-authenticate', 'proxy-authorization',
+  'te', 'trailer', 'transfer-encoding', 'upgrade',
+]);
+
+/** Parse an exact-origin binding and its default headers. Invalid configuration fails closed. */
+function parseTargetHeaderConfig(): TargetHeaderConfig | null {
+  const rawOrigin = process.env.TEMPEST_TARGET_ORIGIN?.trim();
+  const rawHeaders = process.env.TEMPEST_TARGET_HEADERS?.trim();
+  if (!rawOrigin || !rawHeaders) return null;
+
+  try {
+    const target = new URL(rawOrigin);
+    if (!['http:', 'https:'].includes(target.protocol)
+      || target.username || target.password
+      || target.pathname !== '/' || target.search || target.hash) {
+      return null;
+    }
+
+    const parsed: unknown = JSON.parse(rawHeaders);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string' || FORBIDDEN_TARGET_HEADERS.has(name.toLowerCase())) return null;
+      headers.set(name, value);
+    }
+    return headers.keys().next().done ? null : { origin: target.origin, headers };
+  } catch {
+    return null;
+  }
+}
+
+function targetHeadersForUrl(url: string | URL, explicit?: RequestInit['headers']): Headers | undefined {
+  const merged = new Headers();
+  const config = parseTargetHeaderConfig();
+  try {
+    if (config && new URL(url).origin === config.origin) {
+      config.headers.forEach((value, name) => merged.set(name, value));
+    }
+  } catch {
+    // Let fetch or curl report malformed URLs; they simply receive no configured secrets.
+  }
+  new Headers(explicit).forEach((value, name) => merged.set(name, value));
+  return merged.keys().next().done ? undefined : merged;
+}
+
+function redactConfiguredSecrets(result: ToolResult): ToolResult {
+  const config = parseTargetHeaderConfig();
+  const secrets = config ? [...config.headers.values()].filter(Boolean) : [];
+  if (secrets.length === 0) return result;
+
+  const redact = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      return secrets.reduce((text, secret) => text.split(secret).join('[REDACTED]'), value);
+    }
+    if (Array.isArray(value)) return value.map(redact);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, redact(nested)]));
+    }
+    return value;
+  };
+  return redact(result) as ToolResult;
+}
+
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
+const CROSS_ORIGIN_CREDENTIAL_HEADERS = ['authorization', 'cookie', 'cookie2', 'proxy-authorization'];
+
+/** Apply exact-origin headers to every built-in fetch without leaking them across redirects. */
+async function targetFetch(url: string | URL, init: RequestInit = {}): Promise<Response> {
+  const config = parseTargetHeaderConfig();
+  let currentUrl = new URL(url);
+  if (!config || currentUrl.origin !== config.origin) return globalThis.fetch(url, init);
+
+  const explicitHeaders = new Headers(init.headers);
+  let method = (init.method || 'GET').toUpperCase();
+  let body = init.body;
+
+  for (let redirects = 0; redirects <= 20; redirects++) {
+    const headers = targetHeadersForUrl(currentUrl, explicitHeaders);
+    const response = await globalThis.fetch(currentUrl, { ...init, method, body, headers, redirect: 'manual' });
+    const location = response.headers.get('location');
+    if (!REDIRECT_STATUS.has(response.status) || !location) return response;
+    if (redirects === 20) throw new Error('Target request exceeded 20 redirects');
+
+    const nextUrl = new URL(location, currentUrl);
+    if (nextUrl.origin !== currentUrl.origin) {
+      config.headers.forEach((_value, name) => explicitHeaders.delete(name));
+      CROSS_ORIGIN_CREDENTIAL_HEADERS.forEach(name => explicitHeaders.delete(name));
+    }
+    if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === 'POST')) {
+      method = 'GET';
+      body = undefined;
+      ['content-encoding', 'content-language', 'content-location', 'content-type'].forEach(name => explicitHeaders.delete(name));
+    }
+    currentUrl = nextUrl;
+  }
+  throw new Error('Target request redirect handling failed');
+}
+
+// =============================================================================
 // EVENTS
 // =============================================================================
 
@@ -86,8 +211,121 @@ export interface ToolExecution {
 // ARSENAL
 // =============================================================================
 
+// ── Egress scope gate (Phase-0 pack-hunt safety primitive) ──────────────────────────────────
+// A HARD allowlist enforced inside Arsenal.execute() BEFORE any handler runs, so an LLM-supplied
+// tool target can never reach an out-of-scope host. When no scope is set (library/test mode)
+// enforcement is off; the server/mission sets it from the authorized targets so live runs are gated.
+// This closes the "a keyless pack operator fires nuclei/nmap/sqlmap at an off-target host" hole:
+// the only prior scope check was at the HTTP boundary, keyed to the mission target — the per-tool
+// target the model actually supplies was never checked.
+export interface ArsenalScope {
+  /** exact hosts / registrable domains explicitly authorized (subdomains allowed) */
+  allowedHosts: string[];
+  /** allow 127.0.0.0/8, localhost, ::1 */
+  allowLoopback: boolean;
+  /** allow RFC-1918 / link-local / ULA lab ranges */
+  allowPrivate: boolean;
+}
+
+/** The parameter keys a networked tool reads its target from (dns/web/vuln handlers). */
+const SCOPE_TARGET_KEYS = ['url', 'target', 'host', 'hostname', 'domain', 'address', 'ip', 'endpoint', 'base_url', 'rhosts', 'rhost'];
+
+/** Normalize a target-ish value to a bare lowercase host (strip scheme/user/port/path). null if not host-like. */
+export function hostFromTargetValue(v: unknown): string | null {
+  if (typeof v !== 'string' || !v.trim()) return null;
+  let s = v.trim();
+  try { if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = new URL(s).hostname; } catch { /* treat as bare host */ }
+  s = s.replace(/^[^@/]*@/, '').replace(/\/.*$/, '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  return s.toLowerCase() || null;
+}
+
+function isLoopbackTargetHost(h: string): boolean {
+  return h === 'localhost' || h === '::1' || /^127(?:\.\d{1,3}){3}$/.test(h);
+}
+function isPrivateTargetHost(h: string): boolean {
+  return /^10(?:\.\d{1,3}){3}$/.test(h)
+    || /^192\.168(?:\.\d{1,3}){2}$/.test(h)
+    || /^172\.(1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}$/.test(h)
+    || /^169\.254(?:\.\d{1,3}){2}$/.test(h)          // link-local
+    || /^(fc|fd)[0-9a-f]{2}:/i.test(h);              // IPv6 ULA
+}
+
+/** The narrowest CIDR prefix that keeps a private/loopback host's whole block in scope — a wider
+ *  (smaller-number) mask would spill outside it. Used to scope-validate a CIDR TARGET's range. */
+function privateBlockMinMask(h: string): number {
+  if (/^192\.168\./.test(h) || /^169\.254\./.test(h)) return 16;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return 12;
+  return 8; // 10/8, 127/8, and (conservatively) IPv6 ULA
+}
+
+/** null = in scope (or no host to check); otherwise the out-of-scope host/range that must be blocked. */
+export function scopeViolation(scope: ArsenalScope | null, context: ToolContext): string | null {
+  if (!scope) return null; // enforcement off until configured
+  // FAIL CLOSED on a value that LOOKS like a network target (scheme-relative "//host" or a
+  // "scheme://…") but yields no parseable host — that's the bypass ("//evil.com" /
+  // "file:///etc/passwd" host-normalize to an empty string and would otherwise slip past the gate).
+  // A plain local path ("/code/src") is NOT a network target and has no host, so it's skipped — local
+  // file-analysis tools (semgrep/trivy/slither) keep working. (adversarial-review C1)
+  const bypassLooking = (v: string): boolean => v.startsWith('//') || v.includes('://');
+  const candidates: Array<{ h: string; v: string }> = [];
+  const raws: unknown[] = [context.target?.address, ...SCOPE_TARGET_KEYS.map((k) => (context.parameters || {})[k])];
+  for (const raw of raws) {
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    const v = raw.trim();
+    const h = hostFromTargetValue(v);
+    if (!h) {
+      if (bypassLooking(v)) return v; // network-target-shaped but unparseable → block
+      continue; // plain path / non-network value → not a scope target
+    }
+    candidates.push({ h, v });
+  }
+  const allow = scope.allowedHosts.map(a => a.toLowerCase());
+  for (const { h, v } of candidates) {
+    // How is the BASE host admitted — and what CIDR prefix keeps the WHOLE range inside that block?
+    // hostFromTargetValue strips the mask, so "10.0.0.0/0" (base 10.0.0.0 private) would otherwise
+    // sweep the entire internet past a scope authorizing only that base. Validate the range, not the
+    // base. (adversarial-review CIDR mask-strip escape)
+    let minMask: number;
+    if (scope.allowLoopback && isLoopbackTargetHost(h)) minMask = 8;              // 127/8, ::1
+    else if (scope.allowPrivate && isPrivateTargetHost(h)) minMask = privateBlockMinMask(h);
+    else if (allow.some(a => a === h || h.endsWith('.' + a))) minMask = 32;        // exact-allowed host → only /32
+    else return h; // base host out of scope
+    // treat a trailing "/N" as a CIDR mask ONLY on a bare host/ip (no scheme) — not a URL path segment.
+    const cidr = !v.includes('://') && v.match(/^[^/]+\/(\d{1,3})$/);
+    if (cidr && parseInt(cidr[1], 10) < minMask) return v; // CIDR range extends beyond the authorized block
+  }
+  return null;
+}
+
+/** Best-effort target for an approval request/warning — the first target-like param, else the
+ *  context target address. Informational only (the scope gate does the real host math). */
+function approvalTargetOf(context: ToolContext): string | undefined {
+  const params = context.parameters || {};
+  for (const k of SCOPE_TARGET_KEYS) {
+    const v = params[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return context.target?.address;
+}
+
+/** A one-line human-readable summary of a tool call — tool + a few scalar params + target — for the
+ *  approval warning and the audit trail. Object/array params are omitted to keep it short + safe. */
+function describeToolAction(toolName: string, context: ToolContext): string {
+  const summary = Object.entries(context.parameters || {})
+    .filter(([, v]) => v !== undefined && v !== null && typeof v !== 'object')
+    .slice(0, 4)
+    .map(([k, v]) => `${k}=${String(v).slice(0, 48)}`)
+    .join(' ');
+  const target = approvalTargetOf(context);
+  return `${toolName}${summary ? ` (${summary})` : ''}${target ? ` → ${target}` : ''}`;
+}
+
 export class Arsenal extends EventEmitter<ArsenalEvents> {
   private tools: Map<string, CustomTool> = new Map();
+  /** Authorized egress scope; null = enforcement off (set by the server/mission for live runs). */
+  private scope: ArsenalScope | null = null;
+  /** Capability approval gate; null = gating off (backward-compat). The engine wires one for live runs. */
+  private approval: ApprovalController | null = null;
   private executions: ToolExecution[] = [];
   private scp?: SCPClient;
 
@@ -99,6 +337,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
    * Register a tool
    */
   register(tool: CustomTool): void {
+    assertSchemaDepth(tool.parameters ?? []);
     this.tools.set(tool.name, tool);
     this.emit('tool:registered', tool);
   }
@@ -133,6 +372,14 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
     return this.getAllTools().filter(t => t.category === category);
   }
 
+  /** Set (or clear with null) the authorized egress scope enforced in execute(). */
+  setScope(scope: ArsenalScope | null): void { this.scope = scope; }
+  getScope(): ArsenalScope | null { return this.scope; }
+
+  /** Set (or clear) the capability-approval gate enforced in execute() for intrusive/dangerous tools. */
+  setApprovalController(approval: ApprovalController | null): void { this.approval = approval; }
+  getApprovalController(): ApprovalController | null { return this.approval; }
+
   /**
    * Execute a tool
    */
@@ -142,7 +389,60 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
   ): Promise<ToolResult> {
     const tool = this.tools.get(toolName);
     if (!tool) {
-      throw new Error(`Tool "${toolName}" not found`);
+      const err = new ToolError(
+        ToolErrorCategory.ToolNotFound,
+        `Tool "${toolName}" not found`,
+        toolName,
+      );
+      this.emit('tool:error', { tool: { name: toolName } as CustomTool, error: err });
+      throw err;
+    }
+
+    // Egress scope gate: deny out-of-scope network targets BEFORE the handler runs. A tool call
+    // never reaches a host outside the authorized scope, regardless of what the model supplied.
+    const blockedHost = scopeViolation(this.scope, context);
+    if (blockedHost) {
+      const denied: ToolResult = {
+        success: false,
+        error: `SCOPE DENIED: target '${blockedHost}' is not in the authorized scope — ${toolName} refused before execution. Only authorized / loopback / lab targets are permitted.`,
+      };
+      this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName) });
+      return denied;
+    }
+
+    // Capability approval + spicy-action warning gate: an intrusive/credential/dangerous tool is inert
+    // until it has been approved (interactively "approve once, then free", or via the headless
+    // pre-authorization allowlist); the hottest actions also fire a loud, audited, non-blocking
+    // warning. Safe/active tools pass straight through. No controller wired = gating off (backward-compat).
+    if (this.approval && isGatedRisk(tool.riskTier)) {
+      const request: ApprovalRequest = {
+        tool: toolName,
+        risk: tool.riskTier!,
+        operator: context.operator,
+        target: approvalTargetOf(context),
+        action: describeToolAction(toolName, context),
+      };
+      const decision = await this.approval.gate(request);
+      if (!decision.allowed) {
+        const denied: ToolResult = { success: false, error: `APPROVAL REQUIRED: ${decision.reason}` };
+        this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName) });
+        return denied;
+      }
+    }
+
+    // Validation gate: validate args against tool's parameter schema before handler runs.
+    if (tool.parameters && tool.parameters.length > 0) {
+      const validationErrors = validateToolArgs(toolName, context.parameters, tool.parameters);
+      if (validationErrors.length > 0) {
+        const fieldErrors = validationErrors.map(e => `${e.field}: ${e.message} (expected ${e.expected})`).join('; ');
+        const err = new ToolError(
+          ToolErrorCategory.ValidationError,
+          `Validation failed for "${toolName}": ${fieldErrors}`,
+          toolName,
+        );
+        this.emit('tool:error', { tool, error: err });
+        throw err;
+      }
     }
 
     const execution: ToolExecution = {
@@ -155,7 +455,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
     const startTime = Date.now();
 
     try {
-      const result = await tool.handler(context);
+      const result = redactConfiguredSecrets(await tool.handler(context));
 
       if (this.scp) {
         const scpResult = await this.scp.validateOutput(
@@ -178,7 +478,6 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
           }
         }
       }
-
       const durationMs = Date.now() - startTime;
 
       execution.completedAt = Date.now();
@@ -189,14 +488,24 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
       return result;
     } catch (error) {
       execution.completedAt = Date.now();
-      execution.error = error instanceof Error ? error.message : String(error);
-
-      this.emit('tool:error', { tool, error: error as Error });
-
-      return {
+      execution.error = redactConfiguredSecrets({
         success: false,
-        error: execution.error,
-      };
+        error: error instanceof Error ? error.message : String(error),
+      }).error;
+
+      // If already a ToolError, re-throw as-is; otherwise wrap as ExecutionError
+      if (error instanceof ToolError) {
+        this.emit('tool:error', { tool, error });
+        throw error;
+      }
+
+      const wrappedErr = new ToolError(
+        ToolErrorCategory.ExecutionError,
+        `Tool "${toolName}" execution failed: ${execution.error}`,
+        toolName,
+      );
+      this.emit('tool:error', { tool, error: wrappedErr });
+      throw wrappedErr;
     }
   }
 
@@ -221,36 +530,25 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
   /**
    * Convert registered tools to LLM tool definitions for function calling
    */
-  getToolDefinitions(categories?: string[]): LLMToolDefinition[] {
+  getToolDefinitions(categories?: string[], names?: string[]): LLMToolDefinition[] {
     let tools = this.getAllTools();
-    if (categories?.length) {
+    // A per-operator NAME allowlist (the archetype's role toolkit) is the precise gate and
+    // takes precedence over the coarse category filter; fall back to categories, then to all.
+    if (names?.length) {
+      tools = tools.filter(t => names.includes(t.name));
+    } else if (categories?.length) {
       tools = tools.filter(t => categories.includes(t.category));
     }
     return tools.map(tool => {
-      const properties: Record<string, { type: string; description?: string; enum?: string[]; default?: unknown }> = {};
-      const required: string[] = [];
-
-      for (const param of tool.parameters || []) {
-        properties[param.name] = {
-          type: param.type,
-          description: param.description,
-        };
-        if (param.default !== undefined) {
-          properties[param.name].default = param.default;
-        }
-        if (param.required) {
-          required.push(param.name);
-        }
-      }
+      // Use buildJsonSchema() for richer schema generation (enum, items, nested properties)
+      const schema = (tool.parameters && tool.parameters.length > 0)
+        ? buildJsonSchema(tool.parameters)
+        : { type: 'object' as const, properties: {} };
 
       return {
         name: tool.name,
         description: tool.description,
-        parameters: {
-          type: 'object' as const,
-          properties,
-          required: required.length > 0 ? required : undefined,
-        },
+        parameters: schema as LLMToolDefinition['parameters'],
       };
     });
   }
@@ -304,7 +602,40 @@ export function createToolContext(
 // BUILT-IN TOOLS
 // =============================================================================
 
+/**
+ * The built-in probes that are genuinely "spicy" — live credential attacks and active injection
+ * testing. They ship UNGATED (no riskTier below) so every prior run and the headline benchmark keep
+ * firing them freely — their safety boundary is the always-on egress scope gate. An operator who wants
+ * the approval fail-safe to blanket these too opts in with T3MP3ST_GATE_BUILTINS=1, which applies these
+ * tiers via stampSpicyBuiltin() at registration. Kept here, next to BUILTIN_TOOLS, as the single source
+ * of truth for which built-ins are spicy.
+ */
+export const SPICY_BUILTIN_TIERS: Readonly<Record<string, RiskTier>> = {
+  password_spray: 'credential',
+  hash_crack: 'credential',
+  sqli_scan: 'intrusive',
+  xss_scan: 'intrusive',
+};
+
+/** Copy of `tool` stamped with a gated riskTier iff it is a spicy built-in that isn't already tiered;
+ *  otherwise the tool unchanged. Never mutates the shared BUILTIN_TOOLS array — only clones when it
+ *  stamps — so the default (ungated) registration and this opt-in path can coexist. */
+export function stampSpicyBuiltin(tool: CustomTool): CustomTool {
+  const tier = SPICY_BUILTIN_TIERS[tool.name];
+  return tier && tool.riskTier === undefined ? { ...tool, riskTier: tier } : tool;
+}
+
 export const BUILTIN_TOOLS: CustomTool[] = [
+  browserProbeTool,
+  usernameSearchTool,
+  telegramLookupTool,
+  emailFormatTool,
+  ipInfoTool,
+  idorProbeTool,
+  jsAnalyzeTool,
+  kevCheckTool,
+  binarySinkScanTool,
+  r2AnalyzeTool,
   // =============================================================================
   // RECONNAISSANCE TOOLS
   // =============================================================================
@@ -340,8 +671,12 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           case 'NS':
             records = await dnsResolveNs(domain);
             break;
-          default:
-            records = await dnsResolve(domain, recordType) as string[];
+          default: {
+            // dns.resolve returns an array for most rrtypes, but a single object
+            // for SOA (and other structured types) — normalize before joining.
+            const raw = await dnsResolve(domain, recordType);
+            records = Array.isArray(raw) ? (raw as unknown as string[]) : [JSON.stringify(raw)];
+          }
         }
 
         return {
@@ -598,11 +933,11 @@ export const BUILTIN_TOOLS: CustomTool[] = [
     handler: async (context) => {
       const url = context.parameters.url as string;
       const method = (context.parameters.method as string) || 'GET';
-      const headers = (context.parameters.headers as Record<string, string>) || {};
+      const headers = context.parameters.headers as Record<string, string> | undefined;
       const body = context.parameters.body as string | undefined;
 
       try {
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           method,
           headers,
           body: body && method !== 'GET' ? body : undefined,
@@ -637,7 +972,10 @@ export const BUILTIN_TOOLS: CustomTool[] = [
         'Permissions-Policy', 'Cross-Origin-Opener-Policy', 'Cross-Origin-Resource-Policy',
       ];
       try {
-        const response = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
+        const response = await targetFetch(url, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(10000),
+        });
         const analysis = securityHeaders.map(h => {
           const value = response.headers.get(h);
           return `${h}: ${value ? `✓ ${value}` : '✗ Missing'}`;
@@ -684,7 +1022,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           batch.map(async (path) => {
             const fullUrl = `${baseUrl}/${path}`;
             try {
-              const response = await fetch(fullUrl, {
+              const response = await targetFetch(fullUrl, {
                 method: 'GET',
                 signal: AbortSignal.timeout(timeout),
                 redirect: 'manual',
@@ -745,7 +1083,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           signal: AbortSignal.timeout(10000),
         });
 
@@ -872,7 +1210,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await targetFetch(testUrl.toString(), {
             signal: AbortSignal.timeout(5000),
           });
           const body = await response.text();
@@ -949,7 +1287,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
       try {
         const baselineUrl = new URL(baseUrl);
         baselineUrl.searchParams.set(param, 'normalvalue');
-        const baselineResp = await fetch(baselineUrl.toString(), { signal: AbortSignal.timeout(5000) });
+        const baselineResp = await targetFetch(baselineUrl.toString(), { signal: AbortSignal.timeout(5000) });
         const baselineBody = await baselineResp.text();
         baselineLength = baselineBody.length;
       } catch {
@@ -961,7 +1299,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), { signal: AbortSignal.timeout(5000) });
+          const response = await targetFetch(testUrl.toString(), { signal: AbortSignal.timeout(5000) });
           const body = await response.text();
           const bodyLower = body.toLowerCase();
 
@@ -1122,7 +1460,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           }
         });
 
-        socket.on('error', (err) => {
+        socket.on('error', (err: Error) => {
           resolve({
             success: false,
             error: `SSL connection failed: ${err.message}`,
@@ -1171,7 +1509,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
         baselineBody.set(usernameField, username);
         baselineBody.set(passwordField, 'definitely_invalid_password_xyz123!@#');
 
-        const baselineResp = await fetch(url, {
+        const baselineResp = await targetFetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: baselineBody.toString(),
@@ -1195,7 +1533,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           body.set(usernameField, username);
           body.set(passwordField, password);
 
-          const response = await fetch(url, {
+          const response = await targetFetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: body.toString(),
@@ -1455,7 +1793,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
       try {
         const robotsUrl = `${baseUrl}/robots.txt`;
-        const response = await fetch(robotsUrl, {
+        const response = await targetFetch(robotsUrl, {
           signal: AbortSignal.timeout(10000),
         });
 
@@ -1602,6 +1940,81 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       }
     },
   },
+  // ── subdomain_takeover_check ────────────────────────────────────────────────────────────────
+  // HOW TO VERIFY (backend, no UI needed):
+  //   npm run build
+  //   node -e "import('./dist/arsenal/index.js').then(async m=>{const t=m.BUILTIN_TOOLS.find(x=>x.name==='subdomain_takeover_check');console.log((await t.handler({parameters:{target:process.argv[1]}})).output)})" blog.example.com
+  //   → resolves the live CNAME chain and prints a confirmed/potential/none verdict.
+  // The CONFIRMED path (dangling CNAME or an unclaimed-resource body fingerprint) is exercised
+  // end-to-end with DNS + fetch mocked in src/__tests__/subdomain-takeover.test.ts, and the pure
+  // decision matrix is covered there via classifySubdomainTakeover(). ONLY scan hosts you own or
+  // are authorized to test.
+  {
+    name: 'subdomain_takeover_check',
+    description: 'Detect a dangling / unclaimed subdomain (CNAME pointing at a de-provisioned third-party service such as S3, GitHub Pages, Heroku, Azure, Fastly). Resolves the CNAME and matches known takeover fingerprints.',
+    category: 'recon',
+    parameters: [
+      { name: 'target', type: 'string', description: 'Subdomain / hostname to check (e.g. blog.example.com)', required: true },
+      { name: 'timeout', type: 'number', description: 'Per-request timeout in ms', required: false, default: 8000 },
+    ],
+    handler: async (context) => {
+      // Normalize to a bare host: drop scheme, path, port, and a trailing FQDN dot (any of which
+      // would otherwise break the service fingerprint's host-suffix match).
+      const target = ((context.parameters.target as string) || context.target?.address || '')
+        .trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/:\d+$/, '').replace(/\.$/, '').toLowerCase();
+      if (!target) return { success: false, error: 'No target specified' };
+      const timeout = (context.parameters.timeout as number) || 8000;
+
+      // 1) Resolve the CNAME chain. No CNAME → not a takeover candidate (takeovers are CNAME-based).
+      const chain: string[] = [];
+      let cname: string | null = null;
+      try {
+        const cnames = await dnsResolveCname(target);
+        if (cnames.length) { chain.push(...cnames); cname = cnames[cnames.length - 1]; }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        // ENODATA/ENOTFOUND = no CNAME for this name; anything else is a real lookup failure.
+        if (!/ENODATA|ENOTFOUND|ENOTIMP|SERVFAIL/i.test(msg)) {
+          return { success: false, error: `CNAME lookup failed for ${target}: ${msg}` };
+        }
+      }
+
+      // 2) Does the CNAME target still resolve? A dangling (non-resolving) CNAME is a strong signal.
+      let cnameResolves = false;
+      if (cname) {
+        try { cnameResolves = (await dnsResolve4(cname)).length > 0; }
+        catch { try { cnameResolves = (await dnsResolve(cname, 'AAAA') as string[]).length > 0; } catch { cnameResolves = false; } }
+      }
+
+      // 3) Best-effort fetch of the live response to confirm an "unclaimed resource" fingerprint.
+      //    Never fatal — a takeover is often confirmable from DNS alone. Scope-gated by execute().
+      let body: string | undefined;
+      if (cname) {
+        for (const scheme of ['https', 'http']) {
+          try {
+            const resp = await targetFetch(`${scheme}://${target}`, { method: 'GET', signal: AbortSignal.timeout(timeout), redirect: 'manual' });
+            body = (await resp.text()).slice(0, 20000);
+            break;
+          } catch { /* try next scheme, then give up */ }
+        }
+      }
+
+      const verdict = classifySubdomainTakeover({ cname, cnameResolves, body });
+      const output = renderTakeoverReport(target, chain, verdict);
+
+      return {
+        success: true,
+        output,
+        findings: verdict.confidence === 'none' ? [] : [{
+          title: verdict.confidence === 'confirmed'
+            ? `Subdomain takeover${verdict.service ? ` (${verdict.service})` : ''}: ${target}`
+            : `Possible subdomain takeover${verdict.service ? ` (${verdict.service})` : ''}: ${target}`,
+          severity: verdict.severity,
+          details: verdict.reasons.join(' '),
+        }],
+      };
+    },
+  },
   {
     name: 'version_detect',
     description: 'Detect software versions from response headers, meta tags, and known paths',
@@ -1616,7 +2029,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
       try {
         // Fetch main page
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           signal: AbortSignal.timeout(10000),
         });
         const headers = Object.fromEntries(response.headers.entries());
@@ -1690,7 +2103,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
         const probePromises = versionPaths.map(async (vp) => {
           try {
-            const probeResp = await fetch(`${baseUrl}${vp.path}`, {
+            const probeResp = await targetFetch(`${baseUrl}${vp.path}`, {
               signal: AbortSignal.timeout(5000),
               redirect: 'manual',
             });
@@ -1844,7 +2257,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           method: 'GET',
           signal: AbortSignal.timeout(10000),
         });
@@ -2001,7 +2414,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           batch.map(async (path) => {
             try {
               const fullUrl = `${baseUrl}${path}`;
-              const resp = await fetch(fullUrl, {
+              const resp = await targetFetch(fullUrl, {
                 method: 'GET',
                 signal: AbortSignal.timeout(5000),
                 redirect: 'manual',
@@ -2077,11 +2490,12 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const methods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD', 'TRACE', 'CONNECT'];
       const results: { method: string; status: number; allowed: boolean }[] = [];
       const dangerousMethods: string[] = [];
+      const wafBlocks: string[] = [];
 
       // First try OPTIONS to see if Allow header is returned
       let optionsAllow: string | null = null;
       try {
-        const optResp = await fetch(url, {
+        const optResp = await targetFetch(url, {
           method: 'OPTIONS',
           signal: AbortSignal.timeout(5000),
         });
@@ -2103,34 +2517,49 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
         }
 
         try {
-          const response = await fetch(url, {
+          const response = await targetFetch(url, {
             method,
             signal: AbortSignal.timeout(5000),
             redirect: 'manual',
           });
 
           const status = response.status;
-          // Consider a method "allowed" if it doesn't return 405 Method Not Allowed
-          const allowed = status !== 405 && status !== 501;
+          // A method is "allowed" ONLY on a 2xx/3xx origin response. 403/503 are
+          // almost always WAF/CDN blocks (Akamai, Cloudflare, nginx deny) — the
+          // origin may not even support the method, so they must NOT count as
+          // "dangerous methods enabled". 400/404/409 are not method-allow signals.
+          const allowed = status >= 200 && status < 400;
+          const wafBlocked = status === 403 || status === 503;
           results.push({ method, status, allowed });
 
           if (allowed && ['PUT', 'DELETE', 'TRACE', 'PATCH'].includes(method)) {
             dangerousMethods.push(method);
+          } else if (wafBlocked && ['PUT', 'DELETE', 'TRACE', 'PATCH'].includes(method)) {
+            wafBlocks.push(method);
           }
 
           // Consume response body to prevent connection leaks
           await response.text().catch(() => {});
-        } catch {
-          results.push({ method, status: 0, allowed: false });
+        } catch (error) {
+          // Distinguish a TIMEOUT from a connection failure: a busy backend that
+          // can't answer in time is not "unreachable" — the label misleads the LLM.
+          const timedOut = error instanceof Error &&
+            (error.name === 'TimeoutError' || error.name === 'AbortError' || /timeout/i.test(error.message));
+          results.push({ method, status: timedOut ? 408 : 0, allowed: false });
         }
       }
 
       const output = results.map(r => {
         if (r.status === 0) return `  ${r.method}: unreachable`;
-        return `  ${r.method}: ${r.status} ${r.allowed ? '(allowed)' : '(not allowed)'}`;
+        if (r.status === 408) return `  ${r.method}: timeout`;
+        const verdict = r.allowed ? '(allowed)' : (r.status === 403 || r.status === 503) ? '(blocked - likely WAF/CDN)' : '(not allowed)';
+        return `  ${r.method}: ${r.status} ${verdict}`;
       }).join('\n');
 
       const sections = [`HTTP Methods Test for ${url}:\n${output}`];
+      if (wafBlocks.length) {
+        sections.push(`\nNote: ${wafBlocks.join(', ')} returned 403/503 — likely WAF/CDN blocking, NOT method support on the origin. Run wafw00f to confirm.`);
+      }
       if (optionsAllow) {
         sections.push(`\nAllow header: ${optionsAllow}`);
       }
@@ -2182,7 +2611,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
       for (const test of testOrigins) {
         try {
-          const response = await fetch(url, {
+          const response = await targetFetch(url, {
             method: 'GET',
             headers: { 'Origin': test.origin },
             signal: AbortSignal.timeout(5000),
@@ -2253,7 +2682,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           signal: AbortSignal.timeout(10000),
           redirect: 'manual', // Don't follow redirects to capture Set-Cookie
         });
@@ -2371,7 +2800,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await targetFetch(testUrl.toString(), {
             redirect: 'manual', // Don't follow redirects
             signal: AbortSignal.timeout(5000),
           });
@@ -2463,7 +2892,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       try {
         const baselineUrl = new URL(baseUrl);
         baselineUrl.searchParams.set(param, 'nonexistent_file_xyz');
-        const baseResp = await fetch(baselineUrl.toString(), { signal: AbortSignal.timeout(5000) });
+        const baseResp = await targetFetch(baselineUrl.toString(), { signal: AbortSignal.timeout(5000) });
         const baseBody = await baseResp.text();
         baselineLength = baseBody.length;
       } catch {
@@ -2475,7 +2904,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await targetFetch(testUrl.toString(), {
             signal: AbortSignal.timeout(5000),
           });
           const body = await response.text();
@@ -2577,7 +3006,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await targetFetch(testUrl.toString(), {
             signal: AbortSignal.timeout(5000),
           });
           const body = await response.text();
@@ -2653,7 +3082,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           method: 'GET',
           signal: AbortSignal.timeout(10000),
         });
@@ -2734,23 +3163,89 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
   // =============================================================================
   {
     name: 'cve_lookup',
-    description: 'Look up CVEs from the built-in CVE database by keyword or CVE ID',
+    description: 'Look up CVEs by ID or keyword — live NVD (CVSS/vector/published) + EPSS exploit probability, local DB fallback',
     category: 'util',
     parameters: [
-      { name: 'query', type: 'string', description: 'Search keyword or CVE ID (e.g., "log4j" or "CVE-2021-44228")', required: true },
+      { name: 'query', type: 'string', description: 'CVE ID (e.g. CVE-2024-4577) or keyword (e.g. log4j)', required: true },
     ],
     handler: async (context) => {
-      const query = (context.parameters.query as string).toLowerCase();
+      const query = (context.parameters.query as string).trim();
+      const q = query.toLowerCase();
+      const cveIdMatch = /^CVE-\d{4}-\d{4,}$/i.exec(q);
+
+      // ── Live enrichment for a full CVE ID: NVD CVSS + EPSS probability ──
+      if (cveIdMatch) {
+        const cveId = cveIdMatch[0].toUpperCase();
+        const parts: string[] = [];
+        let cvssBase: number | null = null;
+        let severity: string | null = null;
+        let found = false;
+        try {
+          const nvd = await targetFetch(`https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${cveId}`, {
+            signal: AbortSignal.timeout(15000),
+            headers: { 'user-agent': 'T3MP3ST/1.0' },
+          });
+          const j = (await nvd.json()) as { resultsPerPage?: number; vulnerabilities?: { cve: { id: string; descriptions?: { lang: string; value: string }[]; published?: string; metrics?: Record<string, unknown[]> } }[] };
+          const v = j.vulnerabilities?.[0]?.cve;
+          if (v) {
+            found = true;
+            parts.push(`CVE: ${v.id}`);
+            const desc = v.descriptions?.find((d) => d.lang === 'en')?.value ?? '';
+            if (desc) parts.push(`Description: ${desc.slice(0, 400)}`);
+            if (v.published) parts.push(`Published: ${v.published.slice(0, 10)}`);
+            const metrics = v.metrics ?? {};
+            const cvssV4 = metrics.cvssMetricV40?.[0] as { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } } | undefined;
+            const cvssV31 = metrics.cvssMetricV31?.[0] as { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } } | undefined;
+            const cvssV3 = metrics.cvssMetricV30?.[0] as { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } } | undefined;
+            const pick = cvssV4 ?? cvssV31 ?? cvssV3;
+            if (pick?.cvssData) {
+              cvssBase = pick.cvssData.baseScore ?? null;
+              severity = pick.cvssData.baseSeverity ?? null;
+              parts.push(`CVSS: ${cvssBase} (${severity})`);
+              if (pick.cvssData.vectorString) parts.push(`Vector: ${pick.cvssData.vectorString}`);
+            }
+          }
+        } catch { /* NVD unreachable — fall through to EPSS + local */ }
+
+        try {
+          const epss = await targetFetch(`https://api.first.org/data/v1/epss?cve=${cveId}`, { signal: AbortSignal.timeout(10000) });
+          const ej = (await epss.json()) as { data?: { epss?: string; percentile?: string }[] };
+          const e = ej.data?.[0];
+          if (e?.epss !== undefined) {
+            const pct = (parseFloat(e.epss) * 100).toFixed(1);
+            const ptile = e.percentile ? (parseFloat(e.percentile) * 100).toFixed(1) : '?';
+            parts.push(`EPSS exploit probability: ${pct}% (percentile ${ptile})`);
+          }
+        } catch { /* EPSS unreachable */ }
+
+        if (found || parts.length > 0) {
+          const risk = cvssBase !== null && cvssBase >= 9.0 ? 'critical'
+            : cvssBase !== null && cvssBase >= 7.0 ? 'high'
+            : cvssBase !== null && cvssBase >= 4.0 ? 'medium' : 'info';
+          const high = risk === 'critical' || risk === 'high';
+          return {
+            success: true,
+            output: parts.join('\n'),
+            findings: [{
+              title: `CVE Intelligence: ${cveId}`,
+              severity: (high ? 'high' : 'info') as 'high' | 'info',
+              details: parts.join(' | ').slice(0, 400),
+              ...(cveIdMatch ? { cve: [cveId] } : {}),
+            }],
+          };
+        }
+        // NVD+EPSS both failed — fall back to local DB
+      }
 
       const matches: CVEEntry[] = CVE_DATABASE.filter(cve =>
-        cve.id.toLowerCase().includes(query) ||
-        cve.description.toLowerCase().includes(query)
+        cve.id.toLowerCase().includes(q) ||
+        cve.description.toLowerCase().includes(q)
       );
 
       if (matches.length === 0) {
         return {
           success: true,
-          output: `CVE Lookup for "${query}":\nNo matching CVEs found in the local database (${CVE_DATABASE.length} entries).`,
+          output: `CVE Lookup for "${query}":\nNo matching CVEs found (live NVD/EPSS unavailable or no local match; ${CVE_DATABASE.length} local entries).`,
         };
       }
 
@@ -2891,7 +3386,10 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
  */
 export async function isToolAvailable(command: string): Promise<boolean> {
   try {
-    await execFileAsync('which', [command], { timeout: 5000 });
+    // Windows has `where.exe`, POSIX has `which` — `which` alone makes every
+    // installed tool (e.g. curl.exe) look missing on Windows.
+    const probe = process.platform === 'win32' ? 'where' : 'which';
+    await execFileAsync(probe, [command], { timeout: 5000 });
     return true;
   } catch {
     return false;
@@ -2928,6 +3426,34 @@ export async function runSubprocess(
  * External CLI tools that wrap real security tools when available.
  * These gracefully degrade — if the tool isn't installed, they return a helpful message.
  */
+// LLM-supplied `flags` for shell-out tools are ATTACKER-INFLUENCED: word-splitting them into argv is
+// flag injection that reads/writes the OPERATOR's own machine (curl -o/-K/-T/-x/--config, nmap
+// -oN/--script/-iL). This sanitizer drops the file-write/read/config/script flags (and their values);
+// curl bodies are separately forced through --data-raw with an explicit @/< reject. Mirrors the
+// hardened templates in adapter-tools.ts; fail-closed on the known-dangerous vectors.
+const DANGEROUS_EXTERNAL_FLAGS: Record<string, RegExp> = {
+  curl: /^(-o|-O|--output|--remote-name|-K|--config|-T|--upload-file|-x|--proxy|--preproxy|-D|--dump-header|--trace|--trace-ascii|-w|--write-out|--cert|--key|--cacert|--capath|--cert-type|--key-type|--output-dir|--create-dirs|-c|--cookie-jar)$/i,
+  nmap: /^(-o[NXGAS]|--script|--script-args|--script-args-file|--script-help|--script-updatedb|-iL|--excludefile|--datadir|--servicedb|--versiondb|--resume|--stylesheet|--webxml)$/i,
+};
+function sanitizeExternalFlags(tool: 'curl' | 'nmap', raw?: string): string[] {
+  const bad = DANGEROUS_EXTERNAL_FLAGS[tool];
+  const toks = (raw || '').split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < toks.length; i++) {
+    const name = toks[i].split('=')[0];
+    if (bad.test(name)) {
+      if (!toks[i].includes('=') && toks[i + 1] && !toks[i + 1].startsWith('-')) i++; // also drop the flag's value token
+      continue;
+    }
+    out.push(toks[i]);
+  }
+  return out;
+}
+
+function withoutCurlRedirectFlags(flags: string[]): string[] {
+  return flags.filter(flag => !/^--location(?:-trusted)?(?:=|$)/i.test(flag) && !/^-[^-]*L/.test(flag));
+}
+
 export const EXTERNAL_TOOLS: CustomTool[] = [
   {
     name: 'nmap_scan',
@@ -2943,7 +3469,7 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
         return { success: false, error: 'nmap is not installed. Install it with: apt install nmap' };
       }
       const target = context.parameters.target as string;
-      const flags = (context.parameters.flags as string || '-sV -T4').split(/\s+/);
+      const flags = sanitizeExternalFlags('nmap', context.parameters.flags as string || '-sV -T4'); // drop -oN/--script/-iL injection
       const ports = context.parameters.ports as string | undefined;
 
       const args = [...flags];
@@ -3075,21 +3601,53 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       const flags = context.parameters.flags as string | undefined;
 
       const args = ['-s', '-i', '-X', method];
-      if (data) args.push('-d', data);
+      let configuredHeaders = targetHeadersForUrl(url);
+      let configDir: string | undefined;
+      if (data) {
+        // A body starting with @ (read local file) or < (read stdin) turns curl into a local-file
+        // disclosure primitive. --data-raw sends it verbatim and disables @/< interpretation.
+        if (/^[@<]/.test(data)) return { success: false, error: `curl_request: refusing a data value starting with '${data[0]}' (would read a local file/stdin)` };
+        args.push('--data-raw', data);
+      }
       if (headers) {
-        for (const h of headers.split(',')) {
-          args.push('-H', h.trim());
+        const headerLines = headers.split(',').map(header => header.trim()).filter(Boolean);
+        if (configuredHeaders) {
+          const explicitHeaders = new Headers();
+          for (const header of headerLines) {
+            const separator = header.indexOf(':');
+            if (separator <= 0) return { success: false, error: `curl_request: invalid header '${header}'` };
+            explicitHeaders.set(header.slice(0, separator).trim(), header.slice(separator + 1).trim());
+          }
+          configuredHeaders = targetHeadersForUrl(url, explicitHeaders);
+        } else {
+          for (const header of headerLines) args.push('-H', header);
         }
       }
-      if (flags) args.push(...flags.split(/\s+/));
-      args.push(url);
-
-      const result = await runSubprocess('curl', args, { timeout: 30000 });
-      return {
-        success: result.exitCode === 0,
-        output: result.stdout,
-        error: result.exitCode !== 0 ? result.stderr : undefined,
-      };
+      if (flags) {
+        const sanitized = sanitizeExternalFlags('curl', flags); // drop -o/-K/-T/-x file-read/write injection
+        args.push(...(configuredHeaders ? withoutCurlRedirectFlags(sanitized) : sanitized));
+      }
+      try {
+        if (configuredHeaders) {
+          configDir = await mkdtemp(join(tmpdir(), 't3mp3st-curl-'));
+          const configPath = join(configDir, 'headers.conf');
+          const escapeConfig = (value: string): string => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const config = [...configuredHeaders.entries()]
+            .map(([name, value]) => `header = "${escapeConfig(`${name}: ${value}`)}"`)
+            .join('\n');
+          await writeFile(configPath, `${config}\n`, { mode: 0o600 });
+          args.push('--config', configPath);
+        }
+        args.push(url);
+        const result = await runSubprocess('curl', args, { timeout: 30000 });
+        return redactConfiguredSecrets({
+          success: result.exitCode === 0,
+          output: result.stdout,
+          error: result.exitCode !== 0 ? result.stderr : undefined,
+        });
+      } finally {
+        if (configDir) await rm(configDir, { recursive: true, force: true });
+      }
     },
   },
   ...createTsharkExternalTools({ isToolAvailable, runSubprocess }),
