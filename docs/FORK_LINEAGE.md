@@ -4,6 +4,17 @@
 **Fork:** [ManintheCrowds/T3MP3ST_BLU3H4T](https://github.com/ManintheCrowds/T3MP3ST_BLU3H4T)  
 **Identity:** Autonomous **blue team** defense — governance-first detect / validate / respond.
 
+### Upstream sync (as-of)
+
+| Field | Value |
+|---|---|
+| Sync date | 2026-10-14 |
+| Branch | `sync/upstream-2026-10-14` |
+| Upstream tip (`upstream/main`) | `29824d5625ede419ac8cdae418c8f4c72c6270f7` |
+| Pre-sync tag | `pre-upstream-sync-2026-10-14` |
+| Integration | merge (preserve all fork commits; no discard / no force-push main) |
+| Policy | OURS for blue-hat identity + governance (TG-1..11); THEIRS for net-new arsenal/CTF/bench; no xAI/Grok |
+
 ---
 
 ## What we kept
