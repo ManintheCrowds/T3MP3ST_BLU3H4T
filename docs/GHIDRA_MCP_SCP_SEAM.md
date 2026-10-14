@@ -110,6 +110,7 @@ Alternate example (C: Dell paths): [`.cursor/mcp.ghidra.example.json`](../../.cu
 
 ## Related
 
+- [GHIDRA_MCP_JOB_SCOPED_APPROVE.md](../../local-proto/docs/GHIDRA_MCP_JOB_SCOPED_APPROVE.md) — cold MCP vs job-scoped APPROVE; TTL/budget stubs
 - [DETECTION_ENGINE_DESIGN.md](DETECTION_ENGINE_DESIGN.md)
 - [secure-contain-protect skill](../../.cursor/skills/secure-contain-protect/SKILL.md)
 - [blue-hat-bitcoin skill](../../.cursor/skills/blue-hat-bitcoin/SKILL.md)
