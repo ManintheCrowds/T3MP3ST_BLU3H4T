@@ -713,69 +713,6 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       this.recordProgress('tool_result', operator, task, detail, { toolName: name, success: result.success, source });
     });
 
-    operator.on('finding:discovered', ({ finding }) => {
-      this.vault.addFinding(finding);
-      this.emit('finding:discovered', { finding, operatorId: operator.id });
-      this.hooks.onFindingDiscovered?.(finding, { id: operator.id });
-
-      // Sync finding intelligence back to the target object
-      this.syncFindingToTarget(finding);
-
-      // Post the finding to the shared board as a lead — the swarm's verifiable blackboard.
-      // `provenance` carries the tool-vs-model-asserted signal (the refinement loop's feedback);
-      // dedup + provenance-endorsement are the board's job. Best-effort: never break the mission.
-      // Gated on coordination so the baseline (coordination off) leaves the board fully inert.
-      if (this.coordinationEnabled) try {
-        const prov = finding.verifyGate?.provenance ?? 'none';
-        this.packBoard.postLead(operator.id, {
-          kind: 'lead',
-          title: finding.title,
-          where: { targetId: finding.id },
-          vulnClass: finding.cwe?.[0] ?? 'unclassified',
-          confidence: prov === 'tool' ? 'high' : prov === 'context' ? 'medium' : 'low',
-          provenance: prov,
-          cwe: finding.cwe?.[0],
-          severity: finding.severity,
-        });
-        this.leadsPosted++;
-      } catch { /* best-effort */ }
-
-      // [Phase-2 refinement loop] A TOOL-VERIFIED finding spawns a targeted follow-up task for the
-      // NEXT kill-chain phase's operator — chase the verifiable feedback signal (the research's
-      // load-bearing condition). Model-asserted findings spawn NO work (no chasing hallucinations).
-      // Dedup + a per-run cap keep the loop bounded. Gated by T3MP3ST_SWARM_COORD for the bake-off.
-      if (
-        this.coordinationEnabled &&
-        finding.verifyGate?.provenance === 'tool' &&
-        !this.spawnedFollowups.has(finding.id) &&
-        this.spawnedFollowups.size < this.maxFollowups
-      ) {
-        const mission = this.mission.getActiveMission();
-        const queue = this.mission.getTaskQueue();
-        const idx = KILL_CHAIN_ORDER.indexOf(finding.phase);
-        const nextPhase = idx >= 0 && idx < KILL_CHAIN_ORDER.length - 1 ? KILL_CHAIN_ORDER[idx + 1] : undefined;
-        const nextOp = nextPhase ? PHASE_ARCHETYPES[nextPhase]?.[0] : undefined;
-        if (mission && queue && nextPhase && nextOp) {
-          this.spawnedFollowups.add(finding.id);
-          const cwe = finding.cwe?.length ? `, ${finding.cwe.join('/')}` : '';
-          queue.add({
-            id: randomUUID(),
-            missionId: mission.id,
-            name: `Chase: ${finding.title}`.slice(0, 120),
-            description:
-              `A prior operator TOOL-VERIFIED this lead: "${finding.title}" (${finding.severity}${cwe}) on ${finding.targetId}. ` +
-              `${finding.description} Focus this ${nextPhase} step on THIS specific surface — confirm and advance it; do not re-scan broadly.`,
-            phase: nextPhase,
-            operatorType: nextOp,
-            status: 'pending',
-            priority: 20,
-            dependencies: [],
-            createdAt: Date.now(),
-          });
-          this.followupsSpawned++;
-        }
-      }
-
     operator.on('finding:discovered', async ({ finding }) => {
       const stored = await this.vault.addFinding(finding);
       if (!stored) return;
@@ -786,7 +723,60 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       // Sync finding intelligence back to the target object
       this.syncFindingToTarget(stored);
 
-    });
+      // Post the stored to the shared board as a lead — the swarm's verifiable blackboard.
+      // `provenance` carries the tool-vs-model-asserted signal (the refinement loop's feedback);
+      // dedup + provenance-endorsement are the board's job. Best-effort: never break the mission.
+      // Gated on coordination so the baseline (coordination off) leaves the board fully inert.
+      if (this.coordinationEnabled) try {
+        const prov = stored.verifyGate?.provenance ?? 'none';
+        this.packBoard.postLead(operator.id, {
+          kind: 'lead',
+          title: stored.title,
+          where: { targetId: stored.targetId },
+          vulnClass: stored.cwe?.[0] ?? 'unclassified',
+          confidence: prov === 'tool' ? 'high' : prov === 'context' ? 'medium' : 'low',
+          provenance: prov,
+          cwe: stored.cwe?.[0],
+          severity: stored.severity,
+        });
+        this.leadsPosted++;
+      } catch { /* best-effort */ }
+
+      // [Phase-2 refinement loop] A TOOL-VERIFIED stored spawns a targeted follow-up task for the
+      // NEXT kill-chain phase's operator — chase the verifiable feedback signal (the research's
+      // load-bearing condition). Model-asserted findings spawn NO work (no chasing hallucinations).
+      // Dedup + a per-run cap keep the loop bounded. Gated by T3MP3ST_SWARM_COORD for the bake-off.
+      if (
+        this.coordinationEnabled &&
+        stored.verifyGate?.provenance === 'tool' &&
+        !this.spawnedFollowups.has(stored.id) &&
+        this.spawnedFollowups.size < this.maxFollowups
+      ) {
+        const mission = this.mission.getActiveMission();
+        const queue = this.mission.getTaskQueue();
+        const idx = KILL_CHAIN_ORDER.indexOf(stored.phase);
+        const nextPhase = idx >= 0 && idx < KILL_CHAIN_ORDER.length - 1 ? KILL_CHAIN_ORDER[idx + 1] : undefined;
+        const nextOp = nextPhase ? PHASE_ARCHETYPES[nextPhase]?.[0] : undefined;
+        if (mission && queue && nextPhase && nextOp) {
+          this.spawnedFollowups.add(stored.id);
+          const cwe = stored.cwe?.length ? `, ${stored.cwe.join('/')}` : '';
+          queue.add({
+            id: randomUUID(),
+            missionId: mission.id,
+            name: `Chase: ${stored.title}`.slice(0, 120),
+            description:
+              `A prior operator TOOL-VERIFIED this lead: "${stored.title}" (${stored.severity}${cwe}) on ${stored.targetId}. ` +
+              `${stored.description} Focus this ${nextPhase} step on THIS specific surface — confirm and advance it; do not re-scan broadly.`,
+            phase: nextPhase,
+            operatorType: nextOp,
+            status: 'pending',
+            priority: 20,
+            dependencies: [],
+            createdAt: Date.now(),
+          });
+          this.followupsSpawned++;
+        }
+      }
     });
 
     operator.on('credential:harvested', async ({ credential }) => {

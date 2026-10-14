@@ -46,9 +46,7 @@ import {
   isOperatorArchetype,
   parseLLMProvider,
   readOperationDraft,
-  type GeneralLlmRouteConfig,
   type MissionFindingLedgerInput,
-  type ResolvedGeneralLlmConfig,
 } from './server-types.js';
 
 dotenv.config();
@@ -178,27 +176,7 @@ const PAYLOAD_DB = {
   }
 };
 
-const SECRET_PATTERNS: Record<string, { pattern: RegExp; severity: string; provider: string }> = {
-  aws_access_key: { pattern: /AKIA[0-9A-Z]{16}/g, severity: 'critical', provider: 'AWS' },
-  aws_secret_key: { pattern: /[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/g, severity: 'critical', provider: 'AWS' },
-  gcp_api_key: { pattern: /AIza[0-9A-Za-z\-_]{35}/g, severity: 'high', provider: 'GCP' },
-  github_token: { pattern: /ghp_[A-Za-z0-9]{36}/g, severity: 'critical', provider: 'GitHub' },
-  github_oauth: { pattern: /gho_[A-Za-z0-9]{36}/g, severity: 'critical', provider: 'GitHub' },
-  anthropic_api_key: { pattern: /sk-ant-api\d{2}-[A-Za-z0-9_-]{16,}/g, severity: 'critical', provider: 'Anthropic' },
-  openai_api_key: { pattern: /sk-[A-Za-z0-9_-]{20,}/g, severity: 'critical', provider: 'OpenAI' },
-  gitlab_token: { pattern: /glpat-[A-Za-z0-9\-_]{20}/g, severity: 'critical', provider: 'GitLab' },
-  jwt: { pattern: /eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_.+/=]*/g, severity: 'high', provider: 'JWT' },
-  stripe_live: { pattern: /sk_live_[0-9a-zA-Z]{24}/g, severity: 'critical', provider: 'Stripe' },
-  slack_token: { pattern: /xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*/g, severity: 'high', provider: 'Slack' },
-  postgres_uri: { pattern: /postgres(ql)?:\/\/[^:]+:[^@]+@[^/]+\/\w+/gi, severity: 'critical', provider: 'PostgreSQL' },
-  mongodb_uri: { pattern: /mongodb(\+srv)?:\/\/[^:]+:[^@]+@[^/]+/gi, severity: 'critical', provider: 'MongoDB' },
-  rsa_private: { pattern: new RegExp('-----BEGIN RSA ' + 'PRIVATE KEY-----', 'g'), severity: 'critical', provider: 'RSA' },
-  openssh_private: { pattern: new RegExp('-----BEGIN OPENSSH ' + 'PRIVATE KEY-----', 'g'), severity: 'critical', provider: 'OpenSSH' },
-  password_field: { pattern: /password["\s]*[:=]["\s]*[^"'\s]{4,}/gi, severity: 'high', provider: 'Generic' },
-  api_key_field: { pattern: /api[_-]?key["\s]*[:=]["\s]*["']?[A-Za-z0-9\-_]{16,}["']?/gi, severity: 'high', provider: 'Generic' }
-};
-
-
+// Secret pattern redaction lives in ./redact.ts (imported above).
 
 // =============================================================================
 // SERVER CONFIGURATION
@@ -647,7 +625,7 @@ function clientLedgerId(value: unknown, prefix: string): string {
 
 import { BLU3HAT_SCHEMA_PREFIX } from './pliny/defensive_aliases.js';
 
-type TempestMode = 'standalone' | 'plinyos';
+type TempestMode = 'standalone' | 'plinyos' | 't3mp3st';
 type DraftStatus = 'draft' | 'queued' | 'launched' | 'archived';
 type DraftSource = 'human' | 'agent' | 't3mp3st';
 type MissionFamily = 'web_api' | 'ai_red_team' | 'cloud_infra' | 'smart_contract' | 'code_supply_chain' | 'crypto_secrets' | 'reverse_binary' | 'agent_warfare' | 'social_osint' | 'reporting_remediation';

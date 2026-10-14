@@ -10,6 +10,7 @@ import chalk from 'chalk';
 import boxen from 'boxen';
 import ora from 'ora';
 import { config, AVAILABLE_MODELS, hasApiKey, setApiKey } from './config/index.js';
+import type { LLMProvider } from './types/index.js';
 import { LLMBackbone } from './llm/index.js';
 import { getBanner } from './index.js';
 
@@ -720,18 +721,18 @@ async function setupApiKeys(): Promise<void> {
 }
 
 async function setupProvider(): Promise<void> {
-  const configuredProviders: Array<{ name: string; value: 'openrouter' | 'venice' | 'anthropic' | 'openai' }> = [];
+  const configuredProviders: Array<{ name: string; value: string }> = [];
 
   configuredProviders.push({ name: 'Local model (Ollama / LM Studio / vLLM, no API key)', value: 'local' });
   if (hasApiKey('openrouter')) configuredProviders.push({ name: 'OpenRouter', value: 'openrouter' });
   if (hasApiKey('venice')) configuredProviders.push({ name: 'Venice', value: 'venice' });
   if (hasApiKey('anthropic')) configuredProviders.push({ name: 'Anthropic', value: 'anthropic' });
   if (hasApiKey('openai')) configuredProviders.push({ name: 'OpenAI', value: 'openai' });
-  if (hasApiKey('deepseek')) configuredProviders.push({ name: 'DeepSeek', value: 'deepseek' as any });
-  if (hasApiKey('huggingface')) configuredProviders.push({ name: 'HuggingFace', value: 'huggingface' as any });
-  if (hasApiKey('nanogpt')) configuredProviders.push({ name: 'NanoGPT', value: 'nanogpt' as any });
-  if (hasApiKey('novita')) configuredProviders.push({ name: 'Novita AI', value: 'novita' as any });
-  if (config.hasLiteLLMProxy()) configuredProviders.push({ name: 'LiteLLM Proxy', value: 'litellm' as any });
+  if (hasApiKey('deepseek')) configuredProviders.push({ name: 'DeepSeek', value: 'deepseek' });
+  if (hasApiKey('huggingface')) configuredProviders.push({ name: 'HuggingFace', value: 'huggingface' });
+  if (hasApiKey('nanogpt')) configuredProviders.push({ name: 'NanoGPT', value: 'nanogpt' });
+  if (hasApiKey('novita')) configuredProviders.push({ name: 'Novita AI', value: 'novita' });
+  if (config.hasLiteLLMProxy()) configuredProviders.push({ name: 'LiteLLM Proxy', value: 'litellm' });
 
   if (configuredProviders.length === 0) {
     showWarning('No API keys configured. Please add at least one API key first.');
@@ -739,7 +740,7 @@ async function setupProvider(): Promise<void> {
   }
 
   if (configuredProviders.length === 1) {
-    config.setDefaultProvider(configuredProviders[0].value);
+    config.setDefaultProvider(configuredProviders[0].value as LLMProvider);
     showSuccess(`Default provider set to: ${configuredProviders[0].name}`);
     return;
   }
@@ -753,7 +754,7 @@ async function setupProvider(): Promise<void> {
     },
   ]);
 
-  config.setDefaultProvider(provider);
+  config.setDefaultProvider(provider as LLMProvider);
   showSuccess(`Default provider set to: ${provider}`);
 }
 

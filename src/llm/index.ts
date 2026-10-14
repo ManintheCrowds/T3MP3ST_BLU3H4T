@@ -1666,18 +1666,13 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
   setSCPClient(scp: SCPClient): void {
     this.scp = scp;
   }
-private adapter: LLMProviderAdapter;
-private config: LLMConfig;
-private conversationHistory: LLMMessage[] = [];
-private retryAttempts: number = 3;
-private retryDelayMs: number = 1000;
 
-/** Clone this backbone with a different model id (phase-based model routing). */
-withModel(model: string): LLMBackbone {
-  return new LLMBackbone({ ...this.config, model });
-}
+  /** Clone this backbone with a different model id (phase-based model routing). */
+  withModel(model: string): LLMBackbone {
+    return new LLMBackbone({ ...this.config, model });
+  }
 
-constructor(config: LLMConfig) {
+  constructor(config: LLMConfig) {
     super();
     this.config = config;
     this.adapter = this.createAdapter(config);

@@ -13,8 +13,8 @@ import type {
   Severity,
   Vulnerability,
 } from '../types/index.js';
-import { gateLiveFinding } from './gate.js';
 import type { SCPClient } from '../governance/scp-client.js';
+import { gateLiveFinding } from './gate.js';
 
 // =============================================================================
 // CREDENTIAL REDACTION — secrets NEVER leave the process in an API/LLM output
@@ -42,11 +42,11 @@ export interface EvidenceVaultEvents {
   'finding:verified': Finding;
   'finding:gate-blocked': Finding;
   'finding:scp_blocked': { finding: Finding; tier: string };
-  'evidence:scp_blocked': { findingId: string; tier: string; contentLength: number };
-  'credential:scp_blocked': { credentialId: string; tier: string };
   'credential:added': Credential;
   'credential:validated': Credential;
+  'credential:scp_blocked': { credentialId: string; tier: string };
   'evidence:added': { findingId: string; evidence: Evidence };
+  'evidence:scp_blocked': { findingId: string; evidence: Evidence; tier: string };
 }
 
 // =============================================================================
@@ -67,6 +67,30 @@ export function cvssToSeverity(cvss: number): Severity {
   if (cvss >= 4.0) return 'medium';
   if (cvss >= 0.1) return 'low';
   return 'info';
+}
+
+function cloneEvidence(evidence: Evidence): Evidence {
+  return {
+    ...evidence,
+    metadata: evidence.metadata ? { ...evidence.metadata } : undefined,
+  };
+}
+
+function cloneFinding(finding: Finding): Finding {
+  return {
+    ...finding,
+    cve: finding.cve ? [...finding.cve] : undefined,
+    cwe: finding.cwe ? [...finding.cwe] : undefined,
+    references: finding.references ? [...finding.references] : undefined,
+    evidence: Array.isArray(finding.evidence) ? finding.evidence.map(cloneEvidence) : [],
+    verifyGate: finding.verifyGate
+      ? { ...finding.verifyGate, reasons: [...finding.verifyGate.reasons] }
+      : undefined,
+  };
+}
+
+function hasPassedVerificationGate(finding: Finding): boolean {
+  return finding.verifiedAt !== undefined && finding.verifyGate?.passed === true;
 }
 
 const EVIDENCE_TYPES = new Set<Evidence['type']>([
@@ -104,28 +128,6 @@ function applySanitizedEvidenceFields(evidence: Evidence, sanitized: Record<stri
   ) {
     evidence.metadata = sanitized.metadata as Record<string, unknown>;
   }
-function cloneEvidence(evidence: Evidence): Evidence {
-  return {
-    ...evidence,
-    metadata: evidence.metadata ? { ...evidence.metadata } : undefined,
-  };
-}
-
-function cloneFinding(finding: Finding): Finding {
-  return {
-    ...finding,
-    cve: finding.cve ? [...finding.cve] : undefined,
-    cwe: finding.cwe ? [...finding.cwe] : undefined,
-    references: finding.references ? [...finding.references] : undefined,
-    evidence: Array.isArray(finding.evidence) ? finding.evidence.map(cloneEvidence) : [],
-    verifyGate: finding.verifyGate
-      ? { ...finding.verifyGate, reasons: [...finding.verifyGate.reasons] }
-      : undefined,
-  };
-}
-
-function hasPassedVerificationGate(finding: Finding): boolean {
-  return finding.verifiedAt !== undefined && finding.verifyGate?.passed === true;
 }
 
 // =============================================================================
@@ -142,7 +144,6 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   }
 
   /**
-   * Add a finding (SCP-gated: content is inspected before persistence)
    * Normalize a finding into its dedup key. Same finding surfaced by several
    * parallel operators (same title, same target) must not be recorded N times —
    * the swarm's strongest failure mode is finding inflation through duplicates.
@@ -210,9 +211,6 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
       }
     }
 
-    this.findings.set(finding.id, finding);
-    this.emit('finding:added', finding);
-    return finding;
     const stored = cloneFinding(finding);
     const key = this.dedupKeyOf(stored);
     if (this.findings.size > 0) {
@@ -280,7 +278,7 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   }
 
   /**
-   * Add evidence to a finding (SCP-gated: content is inspected before persistence)
+   * Add evidence to a finding
    */
   async addEvidence(findingId: string, evidence: Evidence): Promise<Finding | undefined> {
     const finding = this.findings.get(findingId);
@@ -315,12 +313,6 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
     finding.evidence.push(evidence);
     this.emit('evidence:added', { findingId, evidence });
     return finding;
-    if (finding) {
-      const storedEvidence = cloneEvidence(evidence);
-      finding.evidence.push(storedEvidence);
-      this.emit('evidence:added', { findingId, evidence: cloneEvidence(storedEvidence) });
-    }
-    return finding ? cloneFinding(finding) : undefined;
   }
 
   /**
@@ -367,7 +359,7 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   }
 
   /**
-   * Add a credential (SCP-gated: source field is inspected before persistence)
+   * Add a credential
    */
   async addCredential(credential: Credential): Promise<Credential | undefined> {
     if (!credential.id) {
