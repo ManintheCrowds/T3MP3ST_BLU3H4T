@@ -23,7 +23,7 @@ const DEFAULT_MODEL_LIST_TIMEOUT_MS = 15_000;
 
 // Pseudo-providers with no remote model list (CLI-driven or in-process).
 const NO_REMOTE_LIST = new Set(['codex', 'mock', 'local-agent']);
-const OPENAI_COMPATIBLE_REMOTE_LIST = new Set(['openai', 'venice', 'xai', 'gemini', 'nanogpt', 'novita', 'local']);
+const OPENAI_COMPATIBLE_REMOTE_LIST = new Set(['openai', 'venice', 'gemini', 'nanogpt', 'novita', 'local']);
 const DIRECT_REMOTE_LIST = new Set(['anthropic', 'openrouter']);
 
 const stripTrailingSlash = (u: string): string => u.replace(/\/+$/, '');
@@ -89,7 +89,7 @@ export async function listProviderModels(
     url = opts.baseUrl && opts.baseUrl.trim() ? `${stripTrailingSlash(opts.baseUrl)}/models` : OPENROUTER_MODELS_URL;
     if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
   } else {
-    // OpenAI-compatible: openai / venice / xai / gemini / local / litellm / openai-compat.
+    // OpenAI-compatible: openai / venice / gemini / local / litellm / openai-compat. (xai/Grok banned)
     const base = opts.baseUrl && opts.baseUrl.trim() ? stripTrailingSlash(opts.baseUrl) : undefined;
     if (!base) throw new Error(`provider '${provider}' requires a baseUrl to list models`);
     url = `${base}/models`;

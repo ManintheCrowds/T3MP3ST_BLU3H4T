@@ -11,7 +11,7 @@ import { isAbsolute, join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
-type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'local';
+type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'local';
 
 // =============================================================================
 // CONFIGURATION SCHEMA
@@ -24,7 +24,6 @@ export interface TempestSettings {
     venice?: string;
     anthropic?: string;
     openai?: string;
-    xai?: string;
     gemini?: string;
     deepseek?: string;
     huggingface?: string;
@@ -60,12 +59,6 @@ export interface TempestSettings {
 
   // OpenAI specific
   openai: {
-    baseUrl: string;
-    defaultModel: string;
-  };
-
-  // xAI — Grok Build / Grok models (OpenAI-compatible API)
-  xai: {
     baseUrl: string;
     defaultModel: string;
   };
@@ -166,11 +159,6 @@ const DEFAULT_SETTINGS: TempestSettings = {
   openai: {
     baseUrl: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4-turbo-preview',
-  },
-
-  xai: {
-    baseUrl: 'https://api.x.ai/v1',
-    defaultModel: 'grok-build-0.1',
   },
 
   litellm: {
@@ -502,27 +490,8 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['testing'],
     },
   ],
-  // Model IDs verified against xAI's published model list (docs.x.ai/docs/models, 2026-07-05):
-  // grok-build-0.1 = coding model (256K ctx); grok-4.3 = general (1M ctx). Any current xAI
-  // model id can be passed via config/CLI/model arg — these are just the curated defaults.
-  xai: [
-    {
-      id: 'grok-build-0.1',
-      name: 'Grok Build (grok-build-0.1, 256K)',
-      provider: 'xAI',
-      contextWindow: 256000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
-    },
-    {
-      id: 'grok-4.3',
-      name: 'Grok 4.3 (general, 1M)',
-      provider: 'xAI',
-      contextWindow: 1000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
-    },
-  ],
+  // xAI / Grok provider catalog — DISABLED 2026-07-14 (harness ban: exfil research + operator ethics).
+  // Do not re-add live xai entries without APPROVAL_NEEDED: xAI/Grok live contact.
   // Native Gemini model ids (bare, no `google/` prefix) for Google's OpenAI-compatible endpoint.
   // Distinct from the `google/gemini-*` ids under `openrouter`, which route through OpenRouter.
   gemini: [
@@ -746,7 +715,7 @@ class ConfigManager {
         const envContent = readFileSync(envPath, 'utf-8');
         const lines = envContent.split('\n');
         // Validation variables added
-        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'nanogpt', 'local'];
+        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'nanogpt', 'local'];
 
         for (const line of lines) {
           const trimmed = line.trim();
@@ -778,7 +747,6 @@ class ConfigManager {
     // Environment variables (including values loaded from ~/.t3mp3st/.env above)
     // are intentionally process-local. getApiKey() already gives env vars highest
     // priority, so do not persist them into Conf's apiKeys store as a side effect.
-    // (XAI_API_KEY / Grok Build follows the same safe path — see the envVarMap in getApiKey.)
     this.envLoaded = true;
   }
 
@@ -844,7 +812,6 @@ class ConfigManager {
       venice: 'VENICE_API_KEY',
       anthropic: 'ANTHROPIC_API_KEY',
       openai: 'OPENAI_API_KEY',
-      xai: 'XAI_API_KEY',
       gemini: 'GEMINI_API_KEY',
       deepseek: 'DEEPSEEK_API_KEY',
       huggingface: 'HF_TOKEN',
@@ -913,7 +880,6 @@ class ConfigManager {
     if (this.hasApiKey('venice')) providers.push('venice');
     if (this.hasApiKey('anthropic')) providers.push('anthropic');
     if (this.hasApiKey('openai')) providers.push('openai');
-    if (this.hasApiKey('xai')) providers.push('xai');
     if (this.hasLiteLLMProxy()) providers.push('litellm');
     if (this.hasApiKey('gemini')) providers.push('gemini');
     if (this.hasApiKey('deepseek')) providers.push('deepseek');
@@ -969,12 +935,6 @@ class ConfigManager {
         apiKey = this.getApiKey('openai');
         baseUrl = this.config.get('openai').baseUrl;
         actualModel = model || this.config.get('openai').defaultModel;
-        break;
-      case 'xai':
-        // Grok Build / Grok — xAI's OpenAI-compatible API (native tool-calling).
-        apiKey = this.getApiKey('xai');
-        baseUrl = this.config.get('xai').baseUrl;
-        actualModel = model || this.config.get('xai').defaultModel;
         break;
       case 'litellm':
         apiKey = this.getApiKey('litellm');
@@ -1077,7 +1037,7 @@ class ConfigManager {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita') => {
+    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita') => {
       if (p === primary) return;
       if (p === 'litellm' ? !this.hasLiteLLMProxy() : !this.hasApiKey(p)) return;
       chain.push({
@@ -1092,7 +1052,6 @@ class ConfigManager {
     add('litellm');
     add('anthropic');
     add('openai');
-    add('xai');
     add('gemini');
     add('deepseek');
     add('huggingface');
@@ -1129,9 +1088,6 @@ class ConfigManager {
         break;
       case 'nanogpt':
         this.config.set('defaultModel', this.config.get('nanogpt').defaultModel);
-        break;
-      case 'xai':
-        this.config.set('defaultModel', this.config.get('xai').defaultModel);
         break;
       case 'gemini':
         this.config.set('defaultModel', this.config.get('gemini').defaultModel);
@@ -1173,9 +1129,6 @@ class ConfigManager {
         break;
       case 'nanogpt':
         this.config.set('nanogpt', { ...this.config.get('nanogpt'), defaultModel: model });
-        break;
-      case 'xai':
-        this.config.set('xai', { ...this.config.get('xai'), defaultModel: model });
         break;
       case 'gemini':
         this.config.set('gemini', { ...this.config.get('gemini'), defaultModel: model });
@@ -1220,7 +1173,6 @@ class ConfigManager {
         venice: settings.apiKeys.venice ? '***REDACTED***' : undefined,
         anthropic: settings.apiKeys.anthropic ? '***REDACTED***' : undefined,
         openai: settings.apiKeys.openai ? '***REDACTED***' : undefined,
-        xai: settings.apiKeys.xai ? '***REDACTED***' : undefined,
         gemini: settings.apiKeys.gemini ? '***REDACTED***' : undefined,
         deepseek: settings.apiKeys.deepseek ? '***REDACTED***' : undefined,
         huggingface: settings.apiKeys.huggingface ? '***REDACTED***' : undefined,
@@ -1256,9 +1208,8 @@ ANTHROPIC_API_KEY=
 # Get your key at: https://platform.openai.com/api-keys
 OPENAI_API_KEY=
 
-# xAI API Key
-# Get your key at: https://console.x.ai/
-XAI_API_KEY=
+# xAI / Grok — DISABLED (harness ban). Do not set without APPROVAL_NEEDED: xAI/Grok live contact.
+# XAI_API_KEY=
 
 # LiteLLM Proxy (AI gateway — 100+ providers via single API)
 # Docs: https://docs.litellm.ai/docs/proxy/quick_start

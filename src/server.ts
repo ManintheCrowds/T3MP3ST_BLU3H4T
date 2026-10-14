@@ -36,7 +36,7 @@ import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, type O
 import { ingestRepoToSourceContext, runWhiteboxAnalysis, resolveRepoSourceForAnalysis, RepoCloneError, RepoPathError } from './recon/whitebox.js';
 import { initGrammars } from './recon/ts-grammars.js';
 import { redactCredential } from './evidence/index.js';
-import dotenv from 'dotenv';
+import { BLU3HAT_SCHEMA_PREFIX } from './pliny/defensive_aliases.js';
 import {
   asRecord,
   bountyCredentialsConfigured,
@@ -49,7 +49,8 @@ import {
   type MissionFindingLedgerInput,
 } from './server-types.js';
 
-dotenv.config();
+// Caller-cwd dotenv is intentionally disabled: ConfigManager loads ~/.t3mp3st/.env only.
+// Do not re-enable process-cwd env auto-load here — it would contaminate secrets from unrelated repos.
 
 const execFileAsync = promisify(execFile);
 
@@ -622,8 +623,6 @@ function clientLedgerId(value: unknown, prefix: string): string {
 // =============================================================================
 // DUAL-MODE CONTRACTS - STANDALONE + T3MP3ST ORGAN
 // =============================================================================
-
-import { BLU3HAT_SCHEMA_PREFIX } from './pliny/defensive_aliases.js';
 
 type TempestMode = 'standalone' | 'plinyos' | 't3mp3st';
 type DraftStatus = 'draft' | 'queued' | 'launched' | 'archived';

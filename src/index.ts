@@ -723,7 +723,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       // Sync finding intelligence back to the target object
       this.syncFindingToTarget(stored);
 
-      // Post the stored to the shared board as a lead — the swarm's verifiable blackboard.
+      // Post the finding to the shared board as a lead — the swarm's verifiable blackboard.
       // `provenance` carries the tool-vs-model-asserted signal (the refinement loop's feedback);
       // dedup + provenance-endorsement are the board's job. Best-effort: never break the mission.
       // Gated on coordination so the baseline (coordination off) leaves the board fully inert.
@@ -742,7 +742,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         this.leadsPosted++;
       } catch { /* best-effort */ }
 
-      // [Phase-2 refinement loop] A TOOL-VERIFIED stored spawns a targeted follow-up task for the
+      // [Phase-2 refinement loop] A TOOL-VERIFIED finding spawns a targeted follow-up task for the
       // NEXT kill-chain phase's operator — chase the verifiable feedback signal (the research's
       // load-bearing condition). Model-asserted findings spawn NO work (no chasing hallucinations).
       // Dedup + a per-run cap keep the loop bounded. Gated by T3MP3ST_SWARM_COORD for the bake-off.

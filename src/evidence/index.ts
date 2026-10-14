@@ -46,7 +46,8 @@ export interface EvidenceVaultEvents {
   'credential:validated': Credential;
   'credential:scp_blocked': { credentialId: string; tier: string };
   'evidence:added': { findingId: string; evidence: Evidence };
-  'evidence:scp_blocked': { findingId: string; evidence: Evidence; tier: string };
+  /** Blocked evidence payloads expose length only — not content. */
+  'evidence:scp_blocked': { findingId: string; tier: string; contentLength: number };
 }
 
 // =============================================================================
@@ -183,9 +184,10 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   }
 
   /**
-   * Add a finding — deduplicated by (normalized title, target). A duplicate is
-   * merged into the stored copy (extra evidence appended, gate state kept at the
-   * strongest of the two) and the existing record is returned.
+   * Add a finding (SCP-gated: title/description inspected before persistence).
+   * Deduplicated by (normalized title, target). A duplicate is merged into the
+   * stored copy (extra evidence appended, gate state kept at the strongest of
+   * the two) and the existing record is returned.
    */
   async addFinding(finding: Finding): Promise<Finding | undefined> {
     if (!finding.id) {
@@ -213,21 +215,19 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
 
     const stored = cloneFinding(finding);
     const key = this.dedupKeyOf(stored);
-    if (this.findings.size > 0) {
-      for (const existing of this.findings.values()) {
-        if (this.dedupKeyOf(existing) === key) {
-          for (const ev of stored.evidence) {
-            if (!existing.evidence.some(e => e.type === ev.type && e.content === ev.content)) {
-              existing.evidence.push(cloneEvidence(ev));
-            }
+    for (const existing of this.findings.values()) {
+      if (this.dedupKeyOf(existing) === key) {
+        for (const ev of stored.evidence) {
+          if (!existing.evidence.some(e => e.type === ev.type && e.content === ev.content)) {
+            existing.evidence.push(cloneEvidence(ev));
           }
-          if (!existing.verifyGate?.passed && stored.verifyGate?.passed) {
-            existing.verifyGate = stored.verifyGate;
-            existing.verifiedAt = stored.verifiedAt;
-          }
-          this.emit('finding:updated', cloneFinding(existing));
-          return cloneFinding(existing);
         }
+        if (!existing.verifyGate?.passed && stored.verifyGate?.passed) {
+          existing.verifyGate = stored.verifyGate;
+          existing.verifiedAt = stored.verifiedAt;
+        }
+        this.emit('finding:updated', cloneFinding(existing));
+        return cloneFinding(existing);
       }
     }
     this.findings.set(stored.id, stored);
@@ -278,7 +278,7 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   }
 
   /**
-   * Add evidence to a finding
+   * Add evidence to a finding (SCP-gated: content is inspected before persistence).
    */
   async addEvidence(findingId: string, evidence: Evidence): Promise<Finding | undefined> {
     const finding = this.findings.get(findingId);
@@ -287,12 +287,13 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
     }
 
     if (this.scp) {
-      const scpResult = await this.scp.runPipeline(JSON.stringify(evidence), 'state');
+      const serialized = JSON.stringify(evidence);
+      const scpResult = await this.scp.runPipeline(serialized, 'state');
       if (scpResult.action === 'blocked') {
         this.emit('evidence:scp_blocked', {
           findingId,
           tier: scpResult.tier,
-          contentLength: JSON.stringify(evidence).length,
+          contentLength: serialized.length,
         });
         return undefined;
       }
@@ -302,7 +303,7 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
           this.emit('evidence:scp_blocked', {
             findingId,
             tier: scpResult.tier,
-            contentLength: JSON.stringify(evidence).length,
+            contentLength: serialized.length,
           });
           return undefined;
         }
