@@ -43,7 +43,7 @@ describe('arsenal count honesty (advertised = real registered surface)', () => {
       `arsenal entry count drifted (adapters=${TOOL_ADAPTERS.length}, ` +
         `built-ins=${BUILTIN_TOOLS.length}, externals=${EXTERNAL_TOOLS.length}) — ` +
         'update the README / verify-claims headline to match',
-    ).toBe(121); // 75 adapters (including WPScan) + 42 built-ins + 4 externals
+    ).toBe(125); // 77 adapters (incl. tshark/wireshark) + 42 built-ins + 6 externals
     expect(total).toBeGreaterThanOrEqual(80); // stays consistent with verify-claims' `>= 80` gate
   });
 
@@ -66,7 +66,14 @@ describe('arsenal count honesty (advertised = real registered surface)', () => {
     // metasploit + hydra are catalog_only (callable only via the approval-gated hand-written
     // post-ex drivers); pacu/frida are catalog_only pending narrow approved runners; bloodhound is
     // import_only (collector output is imported, never run here).
-    expect(gated.map((a) => a.id).sort()).toEqual(['bloodhound', 'frida', 'hydra', 'metasploit', 'pacu']);
+    expect(gated.map((a) => a.id).sort()).toEqual([
+      'bloodhound',
+      'frida',
+      'hydra',
+      'metasploit',
+      'pacu',
+      'wireshark', // catalog_only GUI — use tshark_* CustomTools instead
+    ]);
     expect(TOOL_ADAPTERS.find((a) => a.id === 'bloodhound')?.execution).toBe('import_only');
     // Every gated adapter is genuinely off the generic surface.
     for (const a of gated) {

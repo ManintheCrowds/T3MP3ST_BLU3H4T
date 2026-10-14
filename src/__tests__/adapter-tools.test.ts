@@ -418,6 +418,8 @@ describe('invocation-honesty guard — every mintable adapter is classified, non
     'prowler', 'scoutsuite', 'cloudfox', 'pmapper', 'aws-cli', 'az-cli', 'gcloud-cli',
     'promptfoo', 'foundry-forge', 'foundry-cast', 'openssl', 'afl-fuzz', 'ghidra',
     'gdb', 'objection', 'drozer',
+    // Defensive packet analysis: operators use tshark_* CustomTools, not a bare positional mint.
+    'tshark',
   ]);
   // KNOWN DEBT: the positional default is broken/degraded and these SHOULD get a template later.
   // Tracked honestly here rather than hidden — a good follow-up PR shrinks this set.
