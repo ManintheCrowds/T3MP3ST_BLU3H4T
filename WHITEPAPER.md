@@ -158,7 +158,7 @@ This whitepaper covers T3MP3ST v1.0, encompassing the core framework (~12,000 li
 | Layer | Technology |
 |-------|-----------|
 | Language | TypeScript 5.3+ (strict mode) |
-| Runtime | Node.js 18+ |
+| Runtime | Node.js 22.23.4+, 24.22.1+, or 26.12.1+ |
 | Build | `tsc` (TypeScript compiler) |
 | Events | `eventemitter3` (typed events) |
 | CLI | `commander` + `inquirer` + `chalk` + `figlet` |

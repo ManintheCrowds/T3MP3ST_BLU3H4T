@@ -58,10 +58,19 @@ RUN go install github.com/projectdiscovery/httpx/cmd/httpx@latest        && \
     go install github.com/hahwul/dalfox/v2@latest                        && \
     rm -rf /root/go/pkg /root/.cache/go-build
 
-# ── npm + foundry: smart-contract "+" (solhint, forge/cast) ──
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm && \
-    npm install -g solhint && \
-    rm -rf /var/lib/apt/lists/* /root/.npm
+# ── Node.js + foundry: smart-contract "+" (solhint, forge/cast) ──
+# Official linux-x64 build, not Kali apt nodejs. Default matches repo-root
+# .nvmrc. tools/build.sh passes NODE_VERSION from that file. The checksum is
+# the linux-x64 tarball of this exact release (CVE-2026-111497).
+ARG NODE_VERSION=22.23.4
+ARG NODE_SHA256=b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" -o /tmp/node.tar.gz \
+ && echo "${NODE_SHA256}  /tmp/node.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 \
+ && rm -f /tmp/node.tar.gz \
+ && node --version \
+ && npm install -g solhint \
+ && rm -rf /root/.npm
 RUN curl -L https://foundry.paradigm.xyz | bash && /root/.foundry/bin/foundryup || \
     echo "foundry install skipped (offline build) — re-run foundryup later"
 
