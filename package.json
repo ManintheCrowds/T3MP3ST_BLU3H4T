@@ -76,7 +76,8 @@
     "smoke:live": "node scripts/smoke.mjs --live",
     "capability": "node scripts/capability-smoke.mjs",
     "gauntlet": "node scripts/capability-smoke.mjs --gauntlet",
-    "test:gate": "npm run build --silent && node scripts/test-gate.mjs"
+    "test:gate": "npm run build --silent && node scripts/test-gate.mjs",
+    "preinstall": "node scripts/check-node-floor.mjs"
   },
   "bin": {
     "tempest": "./dist/cli.js",
@@ -132,7 +133,7 @@
     "vitest": "^4.1.9"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "^22.23.4 || ^24.22.1 || ^26.12.1"
   },
   "overrides": {
     "qs": "^6.15.2",
