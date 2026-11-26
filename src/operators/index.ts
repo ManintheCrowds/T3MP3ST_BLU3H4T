@@ -475,6 +475,12 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
       // model's prose summary as `type:'output'` for EVERY finding, which passed the gate.
       for (const finding of result.findings) {
         const toolBacked = finding.provenance === 'tool';
+        const evidenceContent = toolBacked
+          ? (finding.toolOutput || finding.details || '')
+          : '';
+        const quote = evidenceContent.length >= 8
+          ? evidenceContent.slice(0, Math.min(64, evidenceContent.length))
+          : '';
         this.recordFinding({
           id: `finding-${randomUUID()}`,
           title: finding.title,
@@ -488,14 +494,14 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
           evidence: toolBacked
             ? [{
                 type: 'output',
-                content: finding.toolOutput || finding.details || '',
+                content: evidenceContent,
                 timestamp: Date.now(),
                 metadata: { tool: finding.toolName },
               }]
             : [],
           remediation: finding.remediation,
           discoveredAt: Date.now(),
-        }, '');
+        }, quote);
       }
 
       return {
