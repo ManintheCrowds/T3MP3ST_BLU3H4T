@@ -124,7 +124,8 @@
     "maintainer:sync": "node scripts/sync-bt6-maintainer.mjs",
     "retest": "npx tsx scripts/retest.mjs",
     "test:release:contracts": "npm run test:model-matrix && npm run test:disclose && npm run test:verify && npm run test:fallback && npm run test:flag-grading && npm run test:cybench-ci && npm run test:ctf-rsa && npm run test:ctf-sqli-blind && npm run test:ctf-xss && npm run test:ctf-ssrf && npm run test:ctf-format-string && npm run test:ctf-memory && npm run test:tools-dockerfile && npm run test:changed-coverage-script && npm run test:playbooks && npm run test:decompose && npm run test:cli-hunt && npm run test:swarm && npm run test:autodetect && npm run test:arsenal-tools && npm run test:lessons && npm run test:update",
-    "test:release:smoke": "node scripts/test-release-smoke.mjs"
+    "test:release:smoke": "node scripts/test-release-smoke.mjs",
+    "preinstall": "node scripts/check-node-floor.mjs"
   },
   "bin": {
     "tempest": "./dist/cli.js",
@@ -150,7 +151,7 @@
     "url": "git+https://github.com/ManintheCrowds/T3MP3ST_BLU3H4T.git"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.25.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "ajv": "^8.20.0",
     "boxen": "^7.1.1",
     "chalk": "^5.3.0",
@@ -188,7 +189,7 @@
     "vitest": "^4.1.9"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": "^22.23.4 || ^24.22.1 || ^26.12.1"
   },
   "overrides": {
     "qs": "^6.15.2",

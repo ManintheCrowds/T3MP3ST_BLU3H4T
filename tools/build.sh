@@ -10,8 +10,14 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "docker not found — install Docker Desktop / engine first."; exit 1
 fi
 
-echo "Building $IMAGE (linux/amd64) — this is heavy (~minutes, multi-GB)…"
-docker build --platform linux/amd64 -t "$IMAGE" .
+NODE_VERSION="$(tr -d '[:space:]' < ../.nvmrc)"
+if [[ -z "$NODE_VERSION" ]]; then
+  echo "Missing Node version in ../.nvmrc" >&2
+  exit 1
+fi
+
+echo "Building $IMAGE (linux/amd64, Node ${NODE_VERSION}) — this is heavy (~minutes, multi-GB)…"
+docker build --platform linux/amd64 --build-arg "NODE_VERSION=${NODE_VERSION}" -t "$IMAGE" .
 
 echo
 echo "Validating with the presence smoke (scripts/check-tools-image.sh)…"

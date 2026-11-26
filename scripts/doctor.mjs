@@ -3,6 +3,7 @@ import { access, readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import process from 'node:process';
+import { assertNodeFloorSamples, isPatchedNode } from './node-floor.mjs';
 
 const execFileAsync = promisify(execFile);
 const baseUrl = (process.env.T3MP3ST_API_URL || 'http://127.0.0.1:3333').replace(/\/$/, '');
@@ -56,8 +57,16 @@ function scriptExists(pkg, scriptName) {
 
 async function main() {
   const startedAt = new Date().toISOString();
-  const major = Number(process.versions.node.split('.')[0]);
-  check('Node runtime is supported', major >= 18, `node ${process.version}`);
+  let floorSamplesOk = true;
+  let floorDetail = '22.23.4, 24.22.1, 26.12.1';
+  try {
+    assertNodeFloorSamples();
+  } catch (error) {
+    floorSamplesOk = false;
+    floorDetail = error instanceof Error ? error.message : 'sample mismatch';
+  }
+  check('Node floor matches patched releases', floorSamplesOk, floorDetail);
+  check('Node runtime is patched', isPatchedNode(process.versions.node), `node ${process.version}`);
 
   const packageJsonExists = await fileExists('package.json');
   check('package.json exists', packageJsonExists);
