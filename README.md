@@ -78,13 +78,13 @@ External content (tool output, feeds, LLM responses)
   └── HITL Gates ────── requestApproval() / escalate() / requestGuidance()
 ```
 
-Source: `src/governance/` (6 modules) — `scp-client.ts`, `org-intent.ts`,
-`hitl.ts`, `risk-tiers.ts`, `scope-match.ts`. Mission target semantics:
+Source: `src/governance/` (7 modules) — `scp-client.ts`, `org-intent.ts`,
+`hitl.ts`, `risk-tiers.ts`, `scope-match.ts`, `defender-triage.ts`. Mission target semantics:
 [mission-targets-semantics](docs/governance/mission-targets-semantics.md)
 
 ## Detection engine
 
-13-file subsystem for real-time threat detection and alert correlation:
+15-file subsystem for real-time threat detection and alert correlation:
 
 ```
 Inbound traffic / logs / events
@@ -102,7 +102,7 @@ Inbound traffic / logs / events
   └── SIEM connectors ───── Wazuh, ELK (Splunk, QRadar planned)
 ```
 
-Source: `src/detection/` — 13 files, factory: `createDetectionEngine()`
+Source: `src/detection/` — 15 files, factory: `createDetectionEngine()`
 
 ## Quick start
 
@@ -194,7 +194,7 @@ export OPENROUTER_API_KEY=...     # or ANTHROPIC_API_KEY
 | [COMPARATIVE_ANALYSIS](docs/COMPARATIVE_ANALYSIS.md) | Gap analysis: T3MP3ST vs Blue-Hat / SCP / PentAGI |
 | [SCOPE_AND_AUTHORIZATION](docs/SCOPE_AND_AUTHORIZATION.md) | Authority model, scope receipts, evidence rules |
 | [mission-targets-semantics](docs/governance/mission-targets-semantics.md) | `mission.targets` + authorized scope wiring |
-| [DETECTION_ENGINE_DESIGN](docs/DETECTION_ENGINE_DESIGN.md) | Detection subsystem (13 files) and rule taxonomy |
+| [DETECTION_ENGINE_DESIGN](docs/DETECTION_ENGINE_DESIGN.md) | Detection subsystem (15 files) and rule taxonomy |
 | [ANTI_AI_REDTEAM_DESIGN](docs/ANTI_AI_REDTEAM_DESIGN.md) | AI attacker detection: 18-technique playbook |
 | [RESPONSE_DECEPTION_DESIGN](docs/RESPONSE_DECEPTION_DESIGN.md) | RESPONDER / DECEIVER design |
 | [FEATURES](FEATURES.md) | Feature-by-feature status |
@@ -205,7 +205,7 @@ export OPENROUTER_API_KEY=...     # or ANTHROPIC_API_KEY
 
 Forked from [elder-plinius/T3MP3ST](https://github.com/elder-plinius/T3MP3ST).
 BLU3H4T keeps the Arsenal, War Room, benchmarks, and evidence vault; adds a
-governance stack and 13-file detection engine; reframes operators for blue-team
+governance stack and 15-file detection engine; reframes operators for blue-team
 detect / validate / respond. Upstream offensive modules remain for **authorized
 purple-team** use only.
 

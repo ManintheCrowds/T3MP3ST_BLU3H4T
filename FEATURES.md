@@ -904,7 +904,7 @@ Canonical mapping: [PLINY_DEFENSIVE_RENAME.md](docs/PLINY_DEFENSIVE_RENAME.md) �
 
 The governance layer that pure offensive frameworks lack. Composes SCP, org-intent, HITL, risk tiers, and scope matching.
 
-Source: `src/governance/` (6 modules) — `scp-client.ts`, `org-intent.ts`, `hitl.ts`, `risk-tiers.ts`, `scope-match.ts`
+Source: `src/governance/` (7 modules) — `scp-client.ts`, `org-intent.ts`, `hitl.ts`, `risk-tiers.ts`, `scope-match.ts`, `defender-triage.ts`
 
 ### Scope Matching
 - [x] `isTargetInAuthorizedScope()` — CIDR / hostname scope checks for mission targets
@@ -978,7 +978,7 @@ Source: `src/operators/defensive.ts`
 
 ## 21. Detection Engine
 
-13-file subsystem for real-time threat detection, alert correlation, and SIEM integration.
+15-file subsystem for real-time threat detection, alert correlation, and SIEM integration.
 
 Source: `src/detection/`
 

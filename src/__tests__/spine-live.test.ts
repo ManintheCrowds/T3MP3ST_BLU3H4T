@@ -35,7 +35,7 @@ describe('honesty spine is load-bearing at finding creation (operator.recordFind
     op.on('finding:gate-blocked', (e) => { blocked = e; });
 
     const f = baseFinding({ title: 'model says critical', severity: 'critical', evidence: [] });
-    op.recordFinding(f);
+    op.recordFinding(f, '');
 
     expect(f.verifyGate?.passed).toBe(false);
     expect(f.verifiedAt).toBeUndefined();
@@ -54,7 +54,7 @@ describe('honesty spine is load-bearing at finding creation (operator.recordFind
       severity: 'high',
       evidence: [{ type: 'output', content: 'PORT 22/tcp open ssh\n...real nmap output...', timestamp: Date.now() }],
     });
-    op.recordFinding(f);
+    op.recordFinding(f, 'PORT 22/tcp open ssh');
 
     expect(f.verifyGate?.passed).toBe(true);
     expect(f.verifyGate?.provenance).toBe('tool');
@@ -63,9 +63,33 @@ describe('honesty spine is load-bearing at finding creation (operator.recordFind
 
   it('getVerified-style filter only surfaces gate-passed findings', () => {
     const op = createOperator('test-recon3', 'recon');
-    op.recordFinding(baseFinding({ title: 'prose claim', evidence: [] }));
-    op.recordFinding(baseFinding({ title: 'tool claim', evidence: [{ type: 'output', content: 'x'.repeat(20), timestamp: Date.now() }] }));
+    op.recordFinding(baseFinding({ title: 'prose claim', evidence: [] }), '');
+    const toolOut = 'x'.repeat(20);
+    op.recordFinding(baseFinding({ title: 'tool claim', evidence: [{ type: 'output', content: toolOut, timestamp: Date.now() }] }), toolOut);
     const verified = op.getFindings().filter((f) => f.verifyGate?.passed);
     expect(verified.map((f) => f.title)).toEqual(['tool claim']);
+  });
+
+  it('executeTask-style quote slice from tool evidence verifies; empty quote does not', () => {
+    const op = createOperator('test-recon4', 'recon');
+    const evidenceContent = 'PORT 443/tcp open https\n...real nmap output...';
+    const quote = evidenceContent.length >= 8
+      ? evidenceContent.slice(0, Math.min(64, evidenceContent.length))
+      : '';
+
+    const withQuote = baseFinding({
+      title: 'tool-backed with quote',
+      evidence: [{ type: 'output', content: evidenceContent, timestamp: Date.now() }],
+    });
+    op.recordFinding(withQuote, quote);
+    expect(withQuote.verifyGate?.passed).toBe(true);
+
+    const emptyQuote = baseFinding({
+      title: 'tool-backed empty quote',
+      evidence: [{ type: 'output', content: evidenceContent, timestamp: Date.now() }],
+    });
+    op.recordFinding(emptyQuote, '');
+    expect(emptyQuote.verifyGate?.passed).toBe(false);
+    expect(emptyQuote.verifyGate?.reasons.join(' ')).toMatch(/quote/i);
   });
 });

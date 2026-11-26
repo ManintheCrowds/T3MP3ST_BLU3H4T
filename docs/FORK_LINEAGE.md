@@ -30,7 +30,7 @@
 
 | Addition | Source / path |
 |---|---|
-| Governance stack (SCP, org-intent hb-1..hb-5, HITL, risk tiers) | `src/governance/` (6 modules) |
+| Governance stack (SCP, org-intent hb-1..hb-5, HITL, risk tiers, defender triage) | `src/governance/` (7 modules) |
 | Scope matching for `mission.targets` | `src/governance/scope-match.ts` — [mission-targets-semantics](governance/mission-targets-semantics.md) |
 | Detection engine (13 TypeScript files) | `src/detection/` — `createDetectionEngine()` |
 | Defensive operator profiles + presets | `src/operators/defensive.ts` |

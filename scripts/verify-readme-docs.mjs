@@ -101,13 +101,13 @@ const techniqueCount = countAiTechniques();
 const ciSteps = countCiRunSteps();
 
 check('Defensive operator count', defensiveCount === 8, `${defensiveCount}`);
-check('Detection TypeScript file count', detectionCount === 13, `${detectionCount}`);
-check('Governance module file count', governanceCount === 6, `${governanceCount}`);
+check('Detection TypeScript file count', detectionCount === 15, `${detectionCount}`);
+check('Governance module file count', governanceCount === 7, `${governanceCount}`);
 check('AI red-team technique count (§2.1–§2.18)', techniqueCount === 18, `${techniqueCount}`);
 
 const readme = read('README.md');
 check('README claims 8 defensive operators', /\b8\b[^.\n]*defensive operator/i.test(readme) || readme.includes('SENTINEL') && readme.includes('ANALYST'));
-check('README claims 13-file detection', readme.includes('13-file') || readme.includes('13 files'));
+check('README claims 15-file detection', readme.includes('15-file') || readme.includes('15 files'));
 check('README claims 18-technique playbook', readme.includes('18-technique') || readme.includes('18 technique'));
 check('README blue-hat identity', /blue team/i.test(readme) && /governance-first/i.test(readme));
 check('README links FORK_LINEAGE.md', readme.includes('FORK_LINEAGE.md'));
