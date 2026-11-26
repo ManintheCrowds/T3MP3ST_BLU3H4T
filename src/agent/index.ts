@@ -10,6 +10,9 @@ import { EventEmitter } from 'eventemitter3';
 import type { LLMBackbone } from '../llm/index.js';
 import type { Arsenal } from '../arsenal/index.js';
 import type { SCPClient } from '../governance/scp-client.js';
+import {
+  ToolError,
+} from '../types/index.js';
 import type {
   LLMMessage,
   LLMToolDefinition,
@@ -20,6 +23,7 @@ import type {
   Target,
   Task,
 } from '../types/index.js';
+import { reflectStrategy, type StrategicReflection } from '../llm/tool-call-boundary.js';
 
 // =============================================================================
 // TYPES
@@ -32,10 +36,45 @@ export interface AgentLoopOptions {
   maxTokens?: number;
   /** Tool categories to expose (default: all) */
   toolCategories?: string[];
+  /** Explicit tool-NAME allowlist — the operator's role toolkit. Overrides toolCategories. */
+  tools?: string[];
   /** Whether to include detailed tool output in context (default: true) */
   verboseToolOutput?: boolean;
   /** Max characters per tool result before truncation (default: 4000) */
   maxToolOutputLength?: number;
+  /** Max concurrent tool executions per LLM response (default: 5) */
+  maxConcurrency?: number;
+}
+
+// =============================================================================
+// SEMAPHORE — lightweight concurrency limiter
+// =============================================================================
+
+class Semaphore {
+  private queue: (() => void)[] = [];
+  private running = 0;
+
+  constructor(private max: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.running < this.max) {
+      this.running++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  release(): void {
+    if (this.queue.length > 0) {
+      const next = this.queue.shift()!;
+      // Keep running count the same — transfer the slot
+      next();
+    } else {
+      this.running--;
+    }
+  }
 }
 
 export interface AgentStep {
@@ -64,13 +103,16 @@ export interface AgentResult {
   durationMs: number;
   /** Whether the agent hit the iteration limit */
   hitLimit: boolean;
+  /** Error from the forced final-summary call after hitting limits, if any */
+  finalSummaryError?: string;
 }
 
 export interface AgentEvents {
   'agent:step': AgentStep;
-  'agent:tool_call': { name: string; args: Record<string, unknown> };
-  'agent:tool_result': { name: string; result: ToolResult };
+  'agent:tool_call': { name: string; args: Record<string, unknown>; source?: 'agent' | 'backend_seeded' };
+  'agent:tool_result': { name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' };
   'agent:thinking': { content: string };
+  'agent:reflection': { reflection: StrategicReflection };
   'agent:complete': AgentResult;
   'agent:error': { error: Error; step: number };
 }
@@ -89,6 +131,11 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     this.scp = scp;
   }
 
+  /** Swap the LLM this loop drives (phase-based model routing). */
+  setLLM(llm: LLMBackbone): void {
+    this.llm = llm;
+  }
+
   constructor(llm: LLMBackbone, arsenal: Arsenal, options?: AgentLoopOptions) {
     super();
     this.llm = llm;
@@ -97,8 +144,10 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       maxIterations: options?.maxIterations ?? 15,
       maxTokens: options?.maxTokens ?? 50000,
       toolCategories: options?.toolCategories ?? [],
+      tools: options?.tools ?? [],
       verboseToolOutput: options?.verboseToolOutput ?? true,
       maxToolOutputLength: options?.maxToolOutputLength ?? 4000,
+      maxConcurrency: Math.max(1, options?.maxConcurrency ?? 5),
     };
   }
 
@@ -109,7 +158,8 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     task: Task,
     systemPrompt: string,
     target?: Target,
-    sourceContext?: string
+    sourceContext?: string,
+    sharedContext?: string
   ): Promise<AgentResult> {
     const startTime = Date.now();
     const steps: AgentStep[] = [];
@@ -120,16 +170,51 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     const seenCalls = new Map<string, string>();
     let noProgress = 0;
 
-    // Get tool definitions from Arsenal
+    // Get tool definitions from Arsenal (the operator's role toolkit: name allowlist wins,
+    // then category filter, then all).
     const toolDefs = this.arsenal.getToolDefinitions(
-      this.options.toolCategories.length > 0 ? this.options.toolCategories : undefined
+      this.options.toolCategories.length > 0 ? this.options.toolCategories : undefined,
+      this.options.tools.length > 0 ? this.options.tools : undefined
     );
 
     // Build initial messages
     const messages: LLMMessage[] = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: this.buildTaskPrompt(task, target, toolDefs, sourceContext) },
+      { role: 'user', content: this.buildTaskPrompt(task, target, toolDefs, sourceContext, sharedContext) },
     ];
+
+    const bootstrapCall = this.getLocalReconBootstrap(task, target, toolDefs);
+    if (bootstrapCall) {
+      const toolStep = await this.executeTool(bootstrapCall, target, -1);
+      steps.push(toolStep);
+      seenCalls.set(
+        `${bootstrapCall.name}:${JSON.stringify(bootstrapCall.arguments || {})}`,
+        String(toolStep.toolResult?.output || toolStep.toolResult?.error || 'no output').replace(/\s+/g, ' ').slice(0, 160)
+      );
+
+      if (toolStep.toolResult?.findings) {
+        const out = String(toolStep.toolResult.output ?? '').slice(0, 4000);
+        for (const tf of toolStep.toolResult.findings) {
+          allFindings.push({ ...tf, provenance: 'tool', toolName: bootstrapCall.name, toolOutput: out || tf.details });
+        }
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: 'Running an initial low-noise recon check before planning deeper actions.',
+        toolCalls: [bootstrapCall],
+      });
+      messages.push({
+        role: 'tool',
+        content: this.formatToolResult(toolStep.toolResult),
+        toolCallId: bootstrapCall.id,
+        name: bootstrapCall.name,
+      });
+      messages.push({
+        role: 'user',
+        content: 'Use the bootstrap observation above as your first tool observation. Continue through the normal ACTION CONTRACT: request another listed tool only if it will materially improve the evidence; otherwise provide the final recon debrief.',
+      });
+    }
 
     for (let i = 0; i < this.options.maxIterations; i++) {
       try {
@@ -162,23 +247,41 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
             toolCalls: response.toolCalls,
           });
 
-          // Execute each tool call
+          // Execute each tool call — independent calls from the same LLM response run
+          // concurrently, bounded by the semaphore. Scope/approval gates are checked
+          // per-call inside arsenal.execute() BEFORE the handler runs.
           const findingsBefore = allFindings.length;
-          for (const toolCall of response.toolCalls) {
-            // ANTI-STALL: a byte-identical repeat is almost always wasted — steer instead of re-running.
+          const semaphore = new Semaphore(this.options.maxConcurrency);
+          const toolSteps: AgentStep[] = new Array(response.toolCalls.length);
+
+          // Pre-check anti-stall for all calls, then execute concurrently
+          const callPromises = response.toolCalls.map(async (toolCall, idx) => {
             const callHash = `${toolCall.name}:${JSON.stringify(toolCall.arguments || {})}`;
-            let toolStep: AgentStep;
             if (seenCalls.has(callHash)) {
               const dup: ToolResult = {
                 success: false,
                 error: `Duplicate call — you already ran ${toolCall.name} with these exact arguments. ` +
                   `Prior result: ${seenCalls.get(callHash)}. Do NOT repeat it — change the arguments, pick a different tool, or move to your final debrief.`,
               };
-              toolStep = { iteration: i, type: 'tool_call', toolName: toolCall.name, toolArgs: toolCall.arguments, toolResult: dup, timestamp: Date.now() };
-            } else {
-              toolStep = await this.executeTool(toolCall, target, i);
-              seenCalls.set(callHash, String(toolStep.toolResult?.output || toolStep.toolResult?.error || 'no output').replace(/\s+/g, ' ').slice(0, 160));
+              toolSteps[idx] = { iteration: i, type: 'tool_call', toolName: toolCall.name, toolArgs: toolCall.arguments, toolResult: dup, timestamp: Date.now() };
+              return;
             }
+
+            await semaphore.acquire();
+            try {
+              toolSteps[idx] = await this.executeTool(toolCall, target, i);
+              seenCalls.set(callHash, String(toolSteps[idx].toolResult?.output || toolSteps[idx].toolResult?.error || 'no output').replace(/\s+/g, ' ').slice(0, 160));
+            } finally {
+              semaphore.release();
+            }
+          });
+
+          await Promise.all(callPromises);
+
+          // Push results in original order and collect findings
+          for (let idx = 0; idx < response.toolCalls.length; idx++) {
+            const toolCall = response.toolCalls[idx];
+            const toolStep = toolSteps[idx];
             steps.push(toolStep);
 
             // Collect findings — tag with REAL tool provenance (the output that backs them)
@@ -215,9 +318,25 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
           // vector or a final debrief — don't let the agent grind the budget on a dead approach.
           noProgress = allFindings.length > findingsBefore ? 0 : noProgress + 1;
           if (noProgress >= 4 && i < this.options.maxIterations - 2) {
+            const reflection = reflectStrategy({
+              successful: false,
+              duplicate: false,
+              attempts: noProgress,
+              maxAttempts: 5,
+              boundary: {
+                scope: target?.address ? [target.address] : [],
+                approvedTools: [],
+                approvalsRequired: Boolean(this.arsenal.getApprovalController()),
+                receiptsRequired: true,
+                evidenceRequired: true,
+                remainingIterations: this.options.maxIterations - i - 1,
+                remainingTokens: Math.max(0, this.options.maxTokens - tokensUsed),
+              },
+            });
+            this.emit('agent:reflection', { reflection });
             messages.push({
               role: 'user',
-              content: '[System: 4 iterations with no new findings. Either pursue a GENUINELY different vector/tool/argument now, or produce your final debrief if the surface is exhausted. Do not keep repeating the current approach.]',
+              content: `[System reflection (advisory only; all scope, approval, receipt, budget, and evidence gates still apply): ${reflection.recommendation}]`,
             });
             noProgress = 0;
           }
@@ -277,6 +396,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     });
 
     let summary = 'Agent reached iteration limit without producing a final summary.';
+    let finalSummaryError: string | undefined;
     try {
       const finalResponse = await this.llm.chat(messages, { maxTokens: 2048 });
       summary = finalResponse.content;
@@ -285,8 +405,8 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       for (const f of this.parseFinalFindings(summary)) {
         if (!allFindings.some((x) => x.title === f.title)) allFindings.push(f);
       }
-    } catch {
-      // Use what we have
+    } catch (error) {
+      finalSummaryError = error instanceof Error ? error.message : String(error);
     }
 
     const result: AgentResult = {
@@ -298,10 +418,43 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       tokensUsed,
       durationMs: Date.now() - startTime,
       hitLimit,
+      finalSummaryError,
     };
 
     this.emit('agent:complete', result);
     return result;
+  }
+
+  private getLocalReconBootstrap(
+    task: Task,
+    target: Target | undefined,
+    tools: LLMToolDefinition[]
+  ): LLMToolCall | undefined {
+    if (this.llm.getProvider() !== 'local-agent') return undefined;
+    if (!target?.address) return undefined;
+    if (task.phase !== 'reconnaissance' && task.operatorType !== 'recon') return undefined;
+
+    const hasTool = (name: string) => tools.some((tool) => tool.name === name);
+    const taskName = task.name.toLowerCase();
+    const id = `local-agent-bootstrap-${Date.now()}`;
+
+    if (taskName.includes('dns') && hasTool('dns_lookup')) {
+      return { id, name: 'dns_lookup', arguments: { domain: target.address, type: 'A' } };
+    }
+
+    if (taskName.includes('port') && hasTool('port_scan')) {
+      return { id, name: 'port_scan', arguments: { target: target.address, ports: '80,443', timeout: 2000 } };
+    }
+
+    if ((taskName.includes('web') || taskName.includes('fingerprint')) && hasTool('header_analysis')) {
+      return { id, name: 'header_analysis', arguments: { url: `https://${target.address}` } };
+    }
+
+    if ((taskName.includes('content') || taskName.includes('discover')) && hasTool('robots_txt_fetch')) {
+      return { id, name: 'robots_txt_fetch', arguments: { url: `https://${target.address}` } };
+    }
+
+    return undefined;
   }
 
   /**
@@ -312,7 +465,8 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     target: Target | undefined,
     iteration: number
   ): Promise<AgentStep> {
-    this.emit('agent:tool_call', { name: toolCall.name, args: toolCall.arguments });
+    const source = iteration < 0 ? 'backend_seeded' : 'agent';
+    this.emit('agent:tool_call', { name: toolCall.name, args: toolCall.arguments, source });
 
     let toolResult: ToolResult;
     try {
@@ -321,19 +475,39 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
         parameters: toolCall.arguments,
       });
     } catch (err) {
-      // A bad/hallucinated tool name must NOT crash the loop. Return the callable set so the
-      // model self-corrects in-place instead of dying or looping on a tool that doesn't exist.
-      const available = this.arsenal
-        .getToolDefinitions(this.options.toolCategories.length ? this.options.toolCategories : undefined)
-        .map((t) => t.name);
-      toolResult = {
-        success: false,
-        error: `Tool "${toolCall.name}" is not available. Callable tools this run: ${available.join(', ') || '(none)'}. ` +
-          `Use one of these EXACT names — do not invent tools; if none fit, describe the capability you need in prose.`,
-      };
+      // ToolError carries a category — use it for structured feedback to the LLM.
+      if (err instanceof ToolError) {
+        toolResult = {
+          success: false,
+          error: JSON.stringify({
+            error: true,
+            category: err.category,
+            tool: toolCall.name,
+            message: `Tool execution failed: ${err.category}`,
+          }),
+        };
+      } else {
+        // A bad/hallucinated tool name must NOT crash the loop. Return the callable set so the
+        // model self-corrects in-place instead of dying or looping on a tool that doesn't exist.
+        const available = this.arsenal
+          .getToolDefinitions(
+            this.options.toolCategories.length ? this.options.toolCategories : undefined,
+            this.options.tools.length ? this.options.tools : undefined
+          )
+          .map((t) => t.name);
+        toolResult = {
+          success: false,
+          error: JSON.stringify({
+            error: true,
+            category: 'tool_not_found',
+            tool: toolCall.name,
+            message: `Tool "${toolCall.name}" is not available. Callable tools this run: ${available.join(', ') || '(none)'}. Use one of these EXACT names — do not invent tools; if none fit, describe the capability you need in prose.`,
+          }),
+        };
+      }
     }
 
-    this.emit('agent:tool_result', { name: toolCall.name, result: toolResult });
+    this.emit('agent:tool_result', { name: toolCall.name, result: toolResult, source });
 
     return {
       iteration,
@@ -348,7 +522,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
   /**
    * Build the initial task prompt with target context and prior intel
    */
-  private buildTaskPrompt(task: Task, target?: Target, tools?: LLMToolDefinition[], sourceContext?: string): string {
+  private buildTaskPrompt(task: Task, target?: Target, tools?: LLMToolDefinition[], sourceContext?: string, sharedContext?: string): string {
     const parts: string[] = [];
 
     parts.push(`## MISSION TASK: ${task.name}`);
@@ -364,6 +538,15 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       parts.push(`\n### White-box source (security-prioritized excerpt)`);
       parts.push(`The following is a security-prioritized excerpt of the target's own source code. Use it to locate and confirm vulnerabilities against the actual implementation — but only report a finding as verified when a tool result backs it.`);
       parts.push(sourceContext);
+    }
+
+    // Shared intel from the pack board (Phase-2 coordination): what sibling operators have already
+    // found/claimed on this mission. Lets this operator build on tool-verified leads and NOT re-tread
+    // surface a teammate already owns. Absent/empty keeps the solo-operator prompt (the baseline).
+    if (sharedContext && sharedContext.trim().length > 0) {
+      parts.push(`\n### Shared intel from the pack (your teammates' live board)`);
+      parts.push(`Other operators are working this same target in parallel. Below is the current lead-board — tool-verified leads, who has claimed what, and open surface. Build on verified leads, do not duplicate a teammate's claimed work, and chase the hottest UNCLAIMED lead that fits your role.`);
+      parts.push(sharedContext);
     }
 
     if (target) {
@@ -424,10 +607,24 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
   }
 
   /**
-   * Format a tool result for the LLM context
+   * Format a tool result for the LLM context.
+   * Structured JSON errors (from ToolError catches) are passed through as-is
+   * so the LLM receives the category without raw internals.
    */
   private formatToolResult(result?: ToolResult): string {
     if (!result) return 'No result returned.';
+
+    // Structured JSON error feedback — pass through directly
+    if (!result.success && result.error) {
+      try {
+        const parsed = JSON.parse(result.error);
+        if (parsed.error === true && parsed.category) {
+          return result.error;
+        }
+      } catch {
+        // Not JSON — fall through to normal formatting
+      }
+    }
 
     const parts: string[] = [];
     parts.push(`Success: ${result.success}`);

@@ -37,12 +37,14 @@
  */
 
 import { readdirSync, readFileSync, statSync } from 'fs';
-import { join, sep } from 'path';
+import { join, sep, extname } from 'path';
+import { parseFileMultiLang } from './ts-parse.js';
 import {
   estimateTokens,
   type SourceFile,
   type SourceBundle,
 } from '../orchestration/context-pack.js';
+import { redactString } from '../redact.js';
 
 // =============================================================================
 // TYPES
@@ -168,20 +170,37 @@ const ENTRY_NAME_RES: RegExp[] = [
 const SECURITY_CONTROL_NAME_RE =
   /valid|verif|auth|authoriz|authentic|permission|sanitiz|escap|csrf|check_|require_|is_allowed/i;
 
-// Dangerous sinks that make a block part of the attack surface.
-const DANGEROUS_SINK_RE =
-  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|subprocess|os\.system|\beval\(|\bexec\(|pickle\.loads|yaml\.load|cursor\.execute|\.raw\(|open\(/;
+// Dangerous sinks that make a block part of the attack surface. Python patterns
+// plus cross-language sinks (Java/Go/C/JS) for the multi-language ingest.
+// Bare-call patterns (system/popen/exec-family/fetch) use a `(?<![\w.])` guard so
+// they match a C/JS free call `system(x)` but NOT a Python/JS method call on a
+// receiver `foo.system(x)` — that keeps the existing Python corpus's rankings
+// stable (its `os.system`/`os.popen` are matched by the qualified patterns).
+export const DANGEROUS_SINK_RE =
+  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|subprocess|os\.system|\beval\(|\bexec\(|pickle\.loads|yaml\.load|cursor\.execute|\.raw\(|open\(|exec\.Command(?:Context)?|Runtime\.getRuntime|ProcessBuilder|(?<![\w.])system\(|(?<![\w.])popen\(|(?<![\w.])exec(?:l|v)[pe]?\(|http\.(Get|Post|NewRequest)|https?\.request\(|[Cc]lient\.(Do|Get|Post)\(|\bfetch\(|axios[.(]/;
 
 // Outbound-request sinks specifically (subset of the above) — used for the
-// SSRF/IDOR "identifier param + outbound request" signal.
-const OUTBOUND_REQUEST_RE =
-  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\./;
+// SSRF/IDOR "identifier param + outbound request" signal. Cross-language: Go
+// net/http (http.Get/Post/NewRequest and *client*.Do/Get/Post), Node http(s).request,
+// JS fetch/axios. `fetch` uses \b (matches window.fetch/this.fetch too); the Go
+// client methods are receiver-qualified to `client` so a mundane db.Get/cache.Get
+// is NOT mistaken for an outbound request.
+export const OUTBOUND_REQUEST_RE =
+  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|http\.(Get|Post|get|post|NewRequest)|https?\.request\(|[Cc]lient\.(Do|Get|Post)\(|\bfetch\(|axios[.(]/;
 
 // URL/identifier-shaped param names.
 const RISKY_PARAM_RE = /url|uri|endpoint|host|addr|id$|_id|path|file|name/i;
 
-// Individual sink patterns, for evidence reporting (riskSignals[]).
+// Individual sink patterns, for evidence reporting (riskSignals[]). Each entry
+// mirrors a branch of DANGEROUS_SINK_RE, so a block that is attack_surface by
+// sink always carries at least one `sink:` label (invariant, #165). The bare-call
+// patterns reuse the same `(?<![\w.])` guard as the classifier, so a qualified
+// `os.system(` is not matched by the bare `system()`. Two cross-language labels
+// textually overlap a generic Python one (`popen(`/`.exec(` are substrings that
+// also match `open()`/`exec()`); SINK_SUBSUMES below collapses those so one sink
+// yields one signal — priority weights `riskSignals.length`.
 const SINK_EVIDENCE_RES: Array<{ label: string; re: RegExp }> = [
+  // Python
   { label: 'requests.get/post/put', re: /requests\.(get|post|put)/ },
   { label: 'urllib', re: /urllib/ },
   { label: 'urlopen', re: /urlopen/ },
@@ -196,7 +215,57 @@ const SINK_EVIDENCE_RES: Array<{ label: string; re: RegExp }> = [
   { label: 'cursor.execute', re: /cursor\.execute/ },
   { label: '.raw()', re: /\.raw\(/ },
   { label: 'open()', re: /open\(/ },
+  // Cross-language (Go / Java / C / JS) — mirror the same branches of DANGEROUS_SINK_RE
+  { label: 'exec.Command', re: /exec\.Command(?:Context)?/ }, // Go os/exec
+  { label: 'Runtime.getRuntime', re: /Runtime\.getRuntime/ }, // Java
+  { label: 'ProcessBuilder', re: /ProcessBuilder/ }, // Java
+  { label: 'system()', re: /(?<![\w.])system\(/ }, // C bare system
+  { label: 'popen()', re: /(?<![\w.])popen\(/ }, // C bare popen
+  { label: 'execl/execv', re: /(?<![\w.])exec(?:l|v)[pe]?\(/ }, // C exec-family
+  { label: 'http.Get/Post/NewRequest', re: /http\.(Get|Post|NewRequest)/ }, // Go net/http
+  { label: 'http.request', re: /https?\.request\(/ }, // Node http(s).request
+  { label: 'client.Do/Get/Post', re: /[Cc]lient\.(Do|Get|Post)\(/ }, // Go/JS HTTP client
+  { label: 'fetch()', re: /\bfetch\(/ }, // JS fetch
+  { label: 'axios', re: /axios[.(]/ }, // JS axios
 ];
+
+// Cross-language sinks that overlap a generic label: a specific sink's text
+// contains a generic pattern, so one call would push two `sink:` signals and
+// double its priority weight (score += 10 * length). Suppress the generic label
+// only when EVERY generic match in the body is accounted for by the specific
+// sink — counted via `covered`, a regex matching exactly the generic occurrences
+// the specific one owns. A genuinely separate generic call (a real `open(path)`
+// beside `popen(cmd)`, or an `engine.exec(code)` beside `Runtime.getRuntime()
+// .exec(cmd)`) is NOT covered, so it still reports.
+//
+// `covered` is per-relationship, NOT a global count of the specific label:
+//  - `popen(`⊃`open(`: textually nested — each `popen(` owns exactly one `open(`,
+//    so `covered` is the `popen(` pattern itself.
+//  - `Runtime.getRuntime`/`exec(`: NOT nested — the two match independent text.
+//    Counting bare `Runtime.getRuntime` here is unsound: `Runtime.getRuntime()
+//    .gc(); other.exec(x)` has one of each, so equal *bare* counts would wrongly
+//    drop the real `other.exec(x)`. `covered` therefore matches only the
+//    `getRuntime()….exec(` chain, so a detached `.exec(` is never suppressed.
+// Only the two overlaps THIS change introduced are listed; pre-existing Python
+// overlaps (`subprocess.Popen`, `urllib…urlopen` → `open()`) are left unchanged —
+// altering Python priority is out of scope for the cross-language evidence fix.
+const SINK_SUBSUMES = [
+  { specific: 'popen()', generic: 'open()', covered: /(?<![\w.])popen\(/ },
+  { specific: 'Runtime.getRuntime', generic: 'exec()', covered: /Runtime\.getRuntime\(\)\s*\.\s*exec\(/ },
+].map(({ specific, generic, covered }) => {
+  // Fail fast at import if a label is mistyped/renamed — this is a static,
+  // deterministic self-check on internal constants (never user input), so a
+  // desync should break the build, not silently disable de-duplication.
+  const genericRe = SINK_EVIDENCE_RES.find((e) => e.label === generic)?.re;
+  if (!SINK_EVIDENCE_RES.some((e) => e.label === specific) || !genericRe) {
+    throw new Error(`SINK_SUBSUMES references a label absent from SINK_EVIDENCE_RES: ${specific} / ${generic}`);
+  }
+  return { specific, generic, genericRe, coveredRe: covered };
+});
+function sinkOccurrences(body: string, re: RegExp): number {
+  const flags = re.flags.includes('g') ? re.flags : re.flags + 'g';
+  return (body.match(new RegExp(re.source, flags)) ?? []).length;
+}
 
 // Base priority score per exposure class.
 const EXPOSURE_BASE: Record<Exposure, number> = {
@@ -212,14 +281,13 @@ const EXPOSURE_BASE: Record<Exposure, number> = {
 // =============================================================================
 
 function isExcluded(path: string, excludeGlobs: string[]): boolean {
-  // Loose match: any exclude fragment appearing as a path segment (or substring)
-  // rejects the path. Prototype-grade — not a real glob engine.
+  // Bare fragments match a path SEGMENT only; glob (`*`) entries match as a
+  // substring.
   const segments = path.split(sep);
   for (const ex of excludeGlobs) {
     if (!ex) continue;
-    // Treat a bare fragment as "matches any segment equal to it OR any substring".
     if (segments.includes(ex)) return true;
-    if (path.includes(ex)) return true;
+    if (ex.includes('*') && path.includes(ex.replace(/\*/g, ''))) return true;
   }
   return false;
 }
@@ -657,8 +725,23 @@ function computeRiskSignals(block: CodeBlock): string[] {
   const signals: string[] = [];
   const body = block.body;
 
-  for (const { label, re } of SINK_EVIDENCE_RES) {
-    if (re.test(body)) signals.push(`sink:${label}`);
+  const matched = SINK_EVIDENCE_RES.filter(({ re }) => re.test(body)).map((e) => e.label);
+  const matchedSet = new Set(matched);
+  const suppressed = new Set<string>();
+  for (const { specific, generic, genericRe, coveredRe } of SINK_SUBSUMES) {
+    // Suppress the generic label only when EVERY generic occurrence is one the
+    // specific sink owns (count of generic === count of covered) — a genuinely
+    // separate generic call in the same body is uncovered, so it still reports.
+    if (
+      matchedSet.has(specific) &&
+      matchedSet.has(generic) &&
+      sinkOccurrences(body, genericRe) === sinkOccurrences(body, coveredRe)
+    ) {
+      suppressed.add(generic);
+    }
+  }
+  for (const label of matched) {
+    if (!suppressed.has(label)) signals.push(`sink:${label}`);
   }
 
   const riskyParam = block.params.find((p) => RISKY_PARAM_RE.test(p));
@@ -757,6 +840,7 @@ export function ingestRepository(config: IngestConfig): IngestResult {
   let truncated = config.maxFiles !== undefined && files.length >= config.maxFiles;
 
   const allBlocks: CodeBlock[] = [];
+  let processedFiles = 0;
   for (const path of files) {
     let content: string;
     try {
@@ -764,8 +848,12 @@ export function ingestRepository(config: IngestConfig): IngestResult {
     } catch {
       continue;
     }
+    processedFiles += 1;
     totalBytes += content.length;
-    allBlocks.push(...parseFile(path, content));
+    // Multi-language dispatch: .py uses the legacy regex parser; supported
+    // non-Python languages use tree-sitter and yield [] when their grammar is
+    // unavailable. Stays sync — parseFileMultiLang does not await.
+    allBlocks.push(...parseFileMultiLang(path, content, extname(path).toLowerCase()));
     if (maxTotalBytes !== undefined && totalBytes >= maxTotalBytes) {
       truncated = true;
       console.warn(`[code-ingest] ingest reached maxTotalBytes ceiling (${maxTotalBytes}) after ${totalBytes} bytes; remaining files skipped — raise IngestConfig.maxTotalBytes to analyze more.`);
@@ -779,7 +867,7 @@ export function ingestRepository(config: IngestConfig): IngestResult {
   const reach = reachability(callGraph, entryPoints);
 
   const stats: IngestResult['stats'] = {
-    files: files.length,
+    files: processedFiles,
     blocks: allBlocks.length,
     exposed_externally: 0,
     exposed_internally: 0,
@@ -842,6 +930,30 @@ export function createPythonIngestConfig(repoRoot: string): IngestConfig {
   };
 }
 
+/**
+ * Multi-language ingest config: same ceilings as the Python config, but crawls
+ * the languages the tree-sitter extractor supports. Non-source files are
+ * excluded by `includeExts`. Used by the white-box analysis entrypoints.
+ *
+ * SECURITY: `maxFileBytes` (1 MB) is a security control here, not just a perf
+ * knob — it caps the peak WASM linear-memory a single tree-sitter parse can
+ * demand. A dense/obfuscated file large enough to approach web-tree-sitter's
+ * 2 GB heap ceiling makes the native allocator abort() (caught + fail-open, but
+ * the WASM high-water-mark cannot be reclaimed for the process's life). The 1 MB
+ * cap keeps that unreachable (worst measured blow-up ~370x → ~5-6x margin). Do
+ * NOT raise it without re-testing that margin.
+ */
+export function createMultiLangIngestConfig(repoRoot: string): IngestConfig {
+  return {
+    repoRoot,
+    includeExts: ['.py', '.js', '.ts', '.tsx', '.go', '.java', '.c', '.cpp'],
+    excludeGlobs: [...DEFAULT_EXCLUDES],
+    maxFileBytes: 1_000_000,
+    maxFiles: 50_000,
+    maxTotalBytes: 1_000_000_000,
+  };
+}
+
 // =============================================================================
 // COMPOSITION WITH context-pack — rendering & security-ordered packing
 // =============================================================================
@@ -865,7 +977,7 @@ export function formatUnitForLLM(unit: AnalysisUnit): string {
     `risk signals: ${unit.riskSignals.length ? unit.riskSignals.join(', ') : '(none)'}`,
   );
   lines.push('---');
-  lines.push(b.body);
+  lines.push(redactString(b.body));
   return lines.join('\n');
 }
 

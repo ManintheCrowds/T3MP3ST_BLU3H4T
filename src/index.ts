@@ -11,7 +11,7 @@
  *
  * const tempest = createTempest({
  *   name: 'Operation Midnight',
- *   llm: { provider: 'openrouter', model: 'anthropic/claude-opus-4-6' },
+ *   llm: { provider: 'openrouter', model: 'anthropic/claude-opus-4-8' },
  *   opsec: { level: 'covert' },
  * });
  *
@@ -45,6 +45,7 @@ export {
   createAnthropicBackbone,
   createOpenRouterBackbone,
   createOpenAIBackbone,
+  createLiteLLMBackbone,
   createMockBackbone,
   createLocalBackbone,
   createBestAvailableBackbone,
@@ -222,23 +223,44 @@ import type {
   TempestConfig,
   LLMConfig,
   RuntimeHooks,
+  LLMProvider,
   OperatorArchetype,
   CommandEvents,
   Finding,
+  ScanProgressEvent,
+  Task,
+  Mission,
 } from './types/index.js';
 
 // Re-export commonly used types
 export { KillChainPhase } from './types/index.js';
 export type { OpsecConfig, Finding, Credential, Target, DetectionEvent } from './types/index.js';
 
-import { OperatorCell, OperatorAgent, ARCHETYPE_PROFILES } from './operators/index.js';
+import { OperatorCell, OperatorAgent, ARCHETYPE_PROFILES, PHASE_ARCHETYPES, KILL_CHAIN_ORDER } from './operators/index.js';
+import { PackBoard } from './pack/board.js';
+import { randomUUID } from 'node:crypto';
+import { createPrivateReportWorkspace, readPrivateToolReport } from './arsenal/report-workspace.js';
 import { MissionControl, TaskQueue, createDefaultRoE } from './mission/index.js';
 import { TargetEnvironment } from './target/index.js';
 import { EvidenceVault } from './evidence/index.js';
-import { Arsenal, BUILTIN_TOOLS, EXTERNAL_TOOLS } from './arsenal/index.js';
+import {
+  Arsenal,
+  BUILTIN_TOOLS,
+  EXTERNAL_TOOLS,
+  stampSpicyBuiltin,
+  hostFromTargetValue,
+  scopeViolation,
+  runSubprocess,
+  isToolAvailable,
+} from './arsenal/index.js';
+import { buildAdapterTools } from './arsenal/adapter-tools.js';
+import { buildPostExTools } from './arsenal/post-ex.js';
+import { ApprovalController, type ApprovalRequest } from './arsenal/approval.js';
+import { TOOL_ADAPTERS } from './arsenal/catalog.js';
 import { OpsecController, createBalancedOpsecConfig } from './opsec/index.js';
 import { CommsChannel } from './comms/index.js';
 import { AnalysisEngine } from './analysis/index.js';
+import { writeMissionReport } from './reporting/auto-report.js';
 import { LLMBackbone } from './llm/index.js';
 import { getLLMConfig } from './config/index.js';
 import { AgentLoop } from './agent/index.js';
@@ -269,6 +291,10 @@ import {
 // TEMPEST COMMAND
 // =============================================================================
 
+const DEFAULT_AGENT_MAX_ITERATIONS = 15;
+const LOCAL_AGENT_MAX_ITERATIONS = Number(process.env.T3MP3ST_LOCAL_AGENT_MAX_ITERATIONS || 30);
+const MAX_PROGRESS_EVENTS = 300;
+
 /**
  * TEMPEST Command - Main orchestration controller
  */
@@ -279,10 +305,17 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   public readonly targetEnv: TargetEnvironment;
   public readonly vault: EvidenceVault;
   public readonly arsenal: Arsenal;
+  /** Capability approval + spicy-action warning gate for intrusive/dangerous tools. */
+  public readonly approval: ApprovalController;
   public readonly opsec: OpsecController;
   public readonly comms: CommsChannel;
   public readonly analysis: AnalysisEngine;
   public readonly llm: LLMBackbone;
+  // The config `this.llm` was built from — kept so spawnOperator() can build each operator its
+  // OWN LLMBackbone instead of sharing this one. LocalAgentAdapter carries per-conversation Claude
+  // Code session state (session id, sent-message tracking); sharing one instance across operators
+  // let one operator's session state leak into another's calls (PR #149 review follow-up).
+  private readonly llmConfig: TempestConfig['llm'];
 
   /**
    * Stub modules (interface-only).
@@ -327,6 +360,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   private tickInterval: NodeJS.Timeout | null = null;
   private tickCount: number = 0;
   private hooks: RuntimeHooks;
+  private readonly taskTimeoutMs: number;
 
   /**
    * White-box source context (security-prioritized code excerpt), set by the
@@ -336,12 +370,35 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    */
   private whiteboxSource: string = '';
 
+  /**
+   * The swarm's shared, verifiable blackboard (Phase-2 coordination). One board per mission run:
+   * every finding posts a lead here, carrying its tool-vs-model-asserted provenance — the verifiable
+   * feedback signal that will drive the refinement loop (findings → targeted follow-up tasks).
+   */
+  private readonly packBoard = new PackBoard();
+
+  /**
+   * Swarm coordination (Phase-2), OPT-IN so the swarm-vs-single-agent bake-off can toggle it: set
+   * `T3MP3ST_SWARM_COORD=on` to enable the finding→follow-up refinement loop. Off = the legacy
+   * phase-sequenced queue (the single-agent-equivalent baseline). Default OFF until it's proven.
+   */
+  private readonly coordinationEnabled = /^(1|true|on)$/i.test(process.env.T3MP3ST_SWARM_COORD ?? '');
+  /** Findings that already spawned a follow-up (dedup — a finding chases exactly once). */
+  private readonly spawnedFollowups = new Set<string>();
+  /** Per-run cap on follow-up tasks so the refinement loop can never explode. */
+  private readonly maxFollowups = Number(process.env.T3MP3ST_SWARM_MAX_FOLLOWUPS) || 24;
+  /** Coordination telemetry — the artifact that distinguishes a coordinated run from N solo agents. */
+  private leadsPosted = 0;
+  private followupsSpawned = 0;
+
   constructor(config: TempestConfig) {
     super();
     this.name = config.name;
     this.hooks = config.hooks || {};
+    this.taskTimeoutMs = TempestCommand.resolveTaskTimeoutMs(config.llm.provider);
 
     // Initialize LLM backbone
+    this.llmConfig = config.llm;
     this.llm = new LLMBackbone(config.llm);
 
     // Initialize core subsystems
@@ -353,9 +410,60 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.opsec = new OpsecController(config.opsec);
     this.comms = new CommsChannel();
 
-    // Register built-in tools and external CLI wrappers
-    this.arsenal.registerMany(BUILTIN_TOOLS);
+    // Register built-in tools and external CLI wrappers. The built-in intrusive/credential probes
+    // (sqli_scan, password_spray, …) are the pre-existing honest baseline and stay UNGATED by default —
+    // zero regression: the headline benchmark and every prior run keep firing them freely. Opt in with
+    // T3MP3ST_GATE_BUILTINS=1 to stamp the spicy ones with a riskTier so the same approval gate that
+    // fences the specialist arsenal (metasploit/hydra) also fences them.
+    const gateBuiltins = /^(1|true|yes|on)$/i.test(process.env.T3MP3ST_GATE_BUILTINS ?? '');
+    this.arsenal.registerMany(gateBuiltins ? BUILTIN_TOOLS.map(stampSpicyBuiltin) : BUILTIN_TOOLS);
     this.arsenal.registerMany(EXTERNAL_TOOLS);
+
+    // Capability approval + spicy-action warning gate. An intrusive/credential/dangerous tool is
+    // INERT until it's approved. Two ways in: (1) headless — a pre-authorization allowlist up front
+    // via T3MP3ST_APPROVED_TOOLS (comma list) runs those tools free; (2) interactive — a host wires an
+    // approver so the operator approves a tool once, then it's free. No approver + not pre-approved =
+    // fail-safe DENY (an unattended run never self-fires an exploit). Every gated call is audited; the
+    // spicy ones (exploits / cred attacks) surface a loud warning. Wired onto the arsenal below so the
+    // gate runs inside Arsenal.execute() alongside the egress scope gate.
+    const preApprovedTools = (process.env.T3MP3ST_APPROVED_TOOLS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    this.approval = new ApprovalController({
+      preApprovedTools,
+      onWarning: (req: ApprovalRequest) => {
+        // Loud, non-blocking warning so a spicy action is always SEEN. A host UI can also read
+        // this.approval.getAudit() or replace the controller for a richer surface.
+        // eslint-disable-next-line no-console
+        console.warn(`⚠️  SPICY ACTION [${req.risk}] ${req.operator ? req.operator + ' → ' : ''}${req.action}`);
+      },
+      // Bridge every gated decision to the dashboard's live approval/audit feed (connectBroadcast
+      // forwards this engine event to the SSE channel as `arsenal.approval`).
+      onDecision: (record) => this.emit('approval:decision', record),
+    });
+    this.arsenal.setApprovalController(this.approval);
+
+    // Phase-1 (OPT-IN): arm the specialist arsenal. Gated behind T3MP3ST_FULL_ARSENAL so the honest
+    // bash-only benchmark baseline (built-ins only) stays uncontaminated — a full-power / pack hunt
+    // sets it. The generic factory NEVER mints catalog_only/import_only adapters; the post-ex drivers
+    // (metasploit/hydra) are hand-written and each carries a riskTier so the approval gate above fences
+    // them. The egress scope gate in Arsenal.execute() still fences every target; the in-handler
+    // scopeOk here is a second belt-and-braces check on the resolved per-adapter target.
+    if (/^(1|true|on)$/i.test(process.env.T3MP3ST_FULL_ARSENAL ?? '')) {
+      const deps = {
+        runSubprocess,
+        isToolAvailable,
+        scopeOk: (target: string) => scopeViolation(this.arsenal.getScope(), { parameters: { target } }) === null,
+        // Report-FILE tools (garak) may emit prompt/response transcripts. Node's mkdtemp creates a
+        // mode-0700 per-run directory; the handler removes it in a finally path on every outcome.
+        createReportWorkspace: createPrivateReportWorkspace,
+        readToolReport: readPrivateToolReport,
+      };
+      const existing = new Set(this.arsenal.getAllTools().map((t) => t.name));
+      this.arsenal.registerMany(buildAdapterTools(TOOL_ADAPTERS, deps, existing));
+      this.arsenal.registerMany(buildPostExTools(deps)); // metasploit_module (dangerous) + hydra_bruteforce (credential)
+    }
 
     // Advanced modules
     this.exploit = new ExploitEngine();
@@ -498,8 +606,14 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     });
 
     // Forward mission events
-    this.mission.on('mission:completed', (_mission) => {
-      // Could trigger reporting here
+    this.mission.on('mission:completed', (mission) => {
+      this.writeMissionReport(mission);
+      this.stop();
+    });
+
+    this.mission.on('mission:aborted', ({ mission }) => {
+      this.writeMissionReport(mission);
+      this.stop();
     });
 
     this.mission.on('mission:phase_changed', ({ mission, newPhase }) => {
@@ -511,6 +625,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     // Only mark "seeded" if a mission actually exists — otherwise generateTasksForTarget
     // no-ops and we'd falsely suppress the tick-loop seeding (leaving operators idle).
     this.targetEnv.on('target:added', (target) => {
+      this.syncArsenalScope();
       const activeMission = this.mission.getActiveMission();
       if (activeMission) {
         this.mission.generateTasksForTarget(target.address);
@@ -548,9 +663,56 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   }
 
   /**
+   * Recompute the arsenal's authorized egress scope from the mission's targets. Operators can only
+   * reach the authorized target hosts (+ loopback + lab/private ranges); every other host is refused
+   * at arsenal.execute() before the handler runs. Called whenever a target is added, so a keyless
+   * operator can never point a networked tool at an off-target host.
+   */
+  private syncArsenalScope(): void {
+    const allowedHosts = this.targetEnv.getAllTargets()
+      .map((t) => hostFromTargetValue(t.address))
+      .filter((h): h is string => !!h);
+    this.arsenal.setScope({ allowedHosts, allowLoopback: true, allowPrivate: true });
+  }
+
+  /**
    * Setup event forwarding for an operator
    */
   private setupOperatorEvents(operator: OperatorAgent): void {
+    operator.on('task:started', ({ task }) => {
+      this.recordProgress('task_started', operator, task, `Started ${task.name}`);
+    });
+
+    operator.on('task:completed', ({ task, result }) => {
+      const findings = result.findings?.length ? ` Findings: ${result.findings.join(', ')}` : '';
+      this.recordProgress(
+        'task_completed',
+        operator,
+        task,
+        `${result.success === false ? 'Finished unsuccessfully' : 'Completed'} ${task.name}.${findings}`,
+        { success: result.success !== false }
+      );
+    });
+
+    operator.on('task:failed', ({ task, error }) => {
+      this.recordProgress('task_failed', operator, task, error, { success: false });
+    });
+
+    operator.on('agent:thinking', ({ task, content }) => {
+      this.recordProgress('thinking', operator, task, content);
+    });
+
+    operator.on('agent:tool_call', ({ task, name, args, source }) => {
+      this.recordProgress('tool_call', operator, task, `${name} ${JSON.stringify(args || {})}`, { toolName: name, source });
+    });
+
+    operator.on('agent:tool_result', ({ task, name, result, source }) => {
+      const detail = result.success
+        ? (result.output || 'Tool completed')
+        : (result.error || result.output || 'Tool failed');
+      this.recordProgress('tool_result', operator, task, detail, { toolName: name, success: result.success, source });
+    });
+
     operator.on('finding:discovered', async ({ finding }) => {
       const stored = await this.vault.addFinding(finding);
       if (!stored) return;
@@ -560,6 +722,61 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
       // Sync finding intelligence back to the target object
       this.syncFindingToTarget(stored);
+
+      // Post the finding to the shared board as a lead — the swarm's verifiable blackboard.
+      // `provenance` carries the tool-vs-model-asserted signal (the refinement loop's feedback);
+      // dedup + provenance-endorsement are the board's job. Best-effort: never break the mission.
+      // Gated on coordination so the baseline (coordination off) leaves the board fully inert.
+      if (this.coordinationEnabled) try {
+        const prov = stored.verifyGate?.provenance ?? 'none';
+        this.packBoard.postLead(operator.id, {
+          kind: 'lead',
+          title: stored.title,
+          where: { targetId: stored.targetId },
+          vulnClass: stored.cwe?.[0] ?? 'unclassified',
+          confidence: prov === 'tool' ? 'high' : prov === 'context' ? 'medium' : 'low',
+          provenance: prov,
+          cwe: stored.cwe?.[0],
+          severity: stored.severity,
+        });
+        this.leadsPosted++;
+      } catch { /* best-effort */ }
+
+      // [Phase-2 refinement loop] A TOOL-VERIFIED finding spawns a targeted follow-up task for the
+      // NEXT kill-chain phase's operator — chase the verifiable feedback signal (the research's
+      // load-bearing condition). Model-asserted findings spawn NO work (no chasing hallucinations).
+      // Dedup + a per-run cap keep the loop bounded. Gated by T3MP3ST_SWARM_COORD for the bake-off.
+      if (
+        this.coordinationEnabled &&
+        stored.verifyGate?.provenance === 'tool' &&
+        !this.spawnedFollowups.has(stored.id) &&
+        this.spawnedFollowups.size < this.maxFollowups
+      ) {
+        const mission = this.mission.getActiveMission();
+        const queue = this.mission.getTaskQueue();
+        const idx = KILL_CHAIN_ORDER.indexOf(stored.phase);
+        const nextPhase = idx >= 0 && idx < KILL_CHAIN_ORDER.length - 1 ? KILL_CHAIN_ORDER[idx + 1] : undefined;
+        const nextOp = nextPhase ? PHASE_ARCHETYPES[nextPhase]?.[0] : undefined;
+        if (mission && queue && nextPhase && nextOp) {
+          this.spawnedFollowups.add(stored.id);
+          const cwe = stored.cwe?.length ? `, ${stored.cwe.join('/')}` : '';
+          queue.add({
+            id: randomUUID(),
+            missionId: mission.id,
+            name: `Chase: ${stored.title}`.slice(0, 120),
+            description:
+              `A prior operator TOOL-VERIFIED this lead: "${stored.title}" (${stored.severity}${cwe}) on ${stored.targetId}. ` +
+              `${stored.description} Focus this ${nextPhase} step on THIS specific surface — confirm and advance it; do not re-scan broadly.`,
+            phase: nextPhase,
+            operatorType: nextOp,
+            status: 'pending',
+            priority: 20,
+            dependencies: [],
+            createdAt: Date.now(),
+          });
+          this.followupsSpawned++;
+        }
+      }
     });
 
     operator.on('credential:harvested', async ({ credential }) => {
@@ -582,6 +799,34 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     operator.on('status:changed', ({ oldStatus: _oldStatus }) => {
       this.hooks.onOperatorStateChange?.({ id: operator.id }, operator.state);
     });
+  }
+
+  private recordProgress(
+    kind: ScanProgressEvent['kind'],
+    operator: OperatorAgent,
+    task: Task | undefined,
+    detail: string,
+    extra: Partial<Pick<ScanProgressEvent, 'toolName' | 'success' | 'source'>> = {}
+  ): void {
+    const compact = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+    const event: ScanProgressEvent = {
+      id: `progress-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      timestamp: Date.now(),
+      kind,
+      operatorId: operator.id,
+      callsign: operator.callsign,
+      archetype: operator.archetype,
+      taskId: task?.id,
+      taskName: task?.name,
+      detail: compact,
+      ...extra,
+    };
+
+    this.progressEvents.push(event);
+    if (this.progressEvents.length > MAX_PROGRESS_EVENTS) {
+      this.progressEvents.splice(0, this.progressEvents.length - MAX_PROGRESS_EVENTS);
+    }
+    this.emit('scan:progress', event);
   }
 
   /**
@@ -739,6 +984,14 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   public stop(): void {
     if (!this.running) return;
 
+    // Auto-report on ANY shutdown path (completed / aborted / stalled / manual
+    // stop): a mission that ends without a completed event must not lose its
+    // findings. Dedup by mission id so completed→stop writes exactly once.
+    try {
+      const mission = this.mission.getActiveMission();
+      if (mission) this.writeMissionReport(mission);
+    } catch { /* best-effort */ }
+
     this.running = false;
     this.taskSeeded = false;
     if (this.tickInterval) {
@@ -749,6 +1002,17 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.detection?.stop();
 
     this.emit('command:stopped');
+  }
+
+  /** Write the markdown engagement report for a mission (idempotent per mission). */
+  private lastReportMissionId: string | null = null;
+  private writeMissionReport(mission: Mission): void {
+    if (this.lastReportMissionId === mission.id) return;
+    this.lastReportMissionId = mission.id;
+    try {
+      const reportsDir = process.env.T3MP3ST_REPORTS_DIR || 'reports';
+      writeMissionReport(reportsDir, mission, this.vault.getAllFindings(), this.targetEnv.getAllTargets());
+    } catch { /* best-effort */ }
   }
 
   /**
@@ -766,6 +1030,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   public resume(): void {
     if (!this.running || !this.paused) return;
     this.paused = false;
+    this.stallReason = null;
     this.emit('command:resumed');
   }
 
@@ -794,28 +1059,33 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * GENEROUS per-dispatch wall-clock backstop (ms). If a single task dispatch stays
    * in-flight longer than this, the tick loop force-resolves it as a timeout so
    * pendingOrActive can reach 0 and the mission can advance/complete even when an
-   * operator promise wedges. Deliberately large (default 5 min) so it NEVER kills a
-   * legitimately-slow-but-working LLM task (e.g. opus planning ~165s); it only fires
-   * on truly-hung dispatches. Override via T3MP3ST_TASK_TIMEOUT_MS.
+   * operator promise wedges. Deliberately large (default 5 min for API models,
+   * 30 min for local-agent backends) so it does not kill legitimately slow local
+   * CLI work; it only fires on truly-hung dispatches. Override via
+   * T3MP3ST_TASK_TIMEOUT_MS.
    */
-  private readonly taskTimeoutMs: number = TempestCommand.resolveTaskTimeoutMs();
+  private progressEvents: ScanProgressEvent[] = [];
 
   /**
-   * Resolve the dispatch timeout from the environment, falling back to the 5-minute
-   * default. Guards against a non-numeric / non-positive override.
+   * Resolve the dispatch timeout from the environment, falling back to the
+   * provider-specific default. Guards against a non-numeric / non-positive override.
    */
-  private static resolveTaskTimeoutMs(): number {
+  private static resolveTaskTimeoutMs(provider?: LLMProvider): number {
     const DEFAULT_TASK_TIMEOUT_MS = 300000; // 5 minutes — generous backstop, not a deadline
+    const LOCAL_AGENT_TASK_TIMEOUT_MS = 1800000; // local CLI agents can need multiple slow turns
     const raw = process.env.T3MP3ST_TASK_TIMEOUT_MS;
     if (raw !== null && raw !== undefined && raw.trim() !== '') {
       const parsed = Number(raw);
       if (Number.isFinite(parsed) && parsed > 0) return parsed;
     }
-    return DEFAULT_TASK_TIMEOUT_MS;
+    return provider === 'local-agent' ? LOCAL_AGENT_TASK_TIMEOUT_MS : DEFAULT_TASK_TIMEOUT_MS;
   }
 
   /** Track whether we've seeded initial tasks for the current mission */
   private taskSeeded: boolean = false;
+
+  /** Human-readable reason a mission was paused because required work failed. */
+  private stallReason: string | null = null;
 
   /**
    * Main tick loop — seeds tasks, dispatches to operators, advances phases
@@ -869,17 +1139,38 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     );
     const inFlight = allMissionTasks.filter(t => this.activeDispatches.has(t.id));
 
-    // If we have tasks, all are done, and nothing is in-flight → advance phase
+    // If we have tasks, all are done, and nothing is in-flight → advance phase.
+    // Failed required tasks are terminal, but they are not successful progress.
+    // Stall instead of walking the phase bar forward with no backend/model work.
     if (allMissionTasks.length > 0 && pendingOrActive.length === 0 && inFlight.length === 0) {
+      const failedCurrentPhase = allMissionTasks.filter(
+        t => t.phase === mission.currentPhase && t.status === 'failed'
+      );
+      if (failedCurrentPhase.length > 0) {
+        const firstError = failedCurrentPhase[0].result?.error;
+        this.stallReason = `stalled in ${mission.currentPhase}: ${failedCurrentPhase.length} required task(s) failed` +
+          (firstError ? ` — ${firstError}` : '');
+        this.paused = true;
+        this.emit('command:paused');
+        return;
+      }
+
       const phaseIndex = mission.phases.indexOf(mission.currentPhase);
       if (phaseIndex === -1) return; // Guard: phase not found (race condition)
       if (phaseIndex < mission.phases.length - 1) {
         // Advance to next phase and generate tasks
         this.mission.advancePhase(mission.id);
+        this.stallReason = null;
         const targets = this.targetEnv.getAllTargets();
         for (const target of targets) {
           this.mission.generateNextPhaseTasks(target.address);
         }
+
+        // Local-agent operators are pre-spawned once and reused for the whole mission (see
+        // autoSpawnForPhase below), so a resumed CLI session (Claude Code --resume) would
+        // otherwise span every phase. Drop it here so each phase starts a fresh session instead
+        // of one unbounded session for the entire kill chain.
+        for (const op of this.cell.getAllOperators()) op.resetLLMSession();
 
         // Auto-spawn operators for the new phase
         const nextPhase = mission.currentPhase;
@@ -906,6 +1197,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
       // Auto-spawn an operator if none exists for this archetype
       if (!operator) {
+        if (this.llm.getProvider() === 'local-agent') continue;
         const allOps = this.cell.getAllOperators();
         const archetypeCount = allOps.filter(op => op.archetype === task.operatorType).length;
         // Spawn up to 3 operators per archetype for parallelism
@@ -952,8 +1244,12 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         // double-fire the completion hook.
         if (!this.activeDispatches.has(task.id)) return;
         this.clearDispatch(task.id);
-        taskQueue.complete(task.id, result);
-        this.hooks.onTaskCompleted?.(task);
+        if (result.success === false) {
+          taskQueue.fail(task.id, result.error || result.output || 'task returned unsuccessful result');
+        } else {
+          taskQueue.complete(task.id, result);
+          this.hooks.onTaskCompleted?.(task);
+        }
       }).catch((_error) => {
         if (!this.activeDispatches.has(task.id)) return;
         this.clearDispatch(task.id);
@@ -987,8 +1283,8 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * never advances, and completeMission() is never called: the mission HANGS.
    *
    * On every tick we scan the in-flight dispatches and force-resolve any that have
-   * exceeded the GENEROUS wall-clock backstop (taskTimeoutMs, default 5 min), or
-   * that exhibit the exact wedge symptom (owning operator is `executing`/`tasked`
+   * exceeded the GENEROUS wall-clock backstop (taskTimeoutMs), or that exhibit
+   * the exact wedge symptom (owning operator is `executing`/`tasked`
    * but its currentTask is null — i.e. it has silently dropped the task). For each
    * we: (1) mark the task failed/timed-out in the queue, (2) clear its dispatch
    * bookkeeping, and (3) reset the owning operator back to idle so it can take new
@@ -1050,6 +1346,9 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * Auto-spawn operators needed for a given kill chain phase
    */
   private autoSpawnForPhase(phase: KillChainPhase): void {
+    if (this.llm.getProvider() === 'local-agent') {
+      return;
+    }
     const phaseOperators: Record<string, OperatorArchetype[]> = {
       [KillChainPhase.RECON]: ['recon'],
       [KillChainPhase.WEAPONIZE]: ['scanner'],
@@ -1089,6 +1388,8 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.on('credential:harvested', (data) => broadcast('credential', data));
     this.on('detection:triggered', (data) => broadcast('detection', data));
     this.on('mission:phase_changed', (data) => broadcast('phase_changed', data));
+    this.on('approval:decision', (data) => broadcast('arsenal.approval', data));
+    this.on('scan:progress', (data) => broadcast('scan:progress', data));
     this.on('tick', (count) => {
       // Broadcast status every 5 ticks to avoid flooding
       if (typeof count === 'number' && count % 5 === 0) {
@@ -1108,20 +1409,33 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     callsign: string,
     archetype: OperatorArchetype
   ): OperatorAgent {
-    const operator = this.cell.spawnOperator(callsign, archetype);
+    // Each operator gets its OWN LLMBackbone (same config as the mission's) rather than sharing
+    // this.llm — see the llmConfig field comment. Used for BOTH this operator's AgentLoop and its
+    // own decompose-on-failure fallback, so the two stay consistent with each other while staying
+    // isolated from every other operator in the cell.
+    const operatorLLM = new LLMBackbone(this.llmConfig);
+    const operator = this.cell.spawnOperator(callsign, archetype, undefined, operatorLLM);
     this.setupOperatorEvents(operator);
 
-    // Attach the agent loop scoped to this archetype's tool categories
+    // Attach the agent loop scoped to this archetype's SPECIALIZED role toolkit (defaultTools =
+    // the curated per-operator tool allowlist). toolCategories stays as a coarse fallback.
     const profile = ARCHETYPE_PROFILES[archetype];
-    const agentLoop = new AgentLoop(this.llm, this.arsenal, {
-      maxIterations: 15,
+    const maxIterations = operatorLLM.getProvider() === 'local-agent'
+      ? LOCAL_AGENT_MAX_ITERATIONS
+      : DEFAULT_AGENT_MAX_ITERATIONS;
+    const agentLoop = new AgentLoop(operatorLLM, this.arsenal, {
+      maxIterations,
       maxTokens: 50000,
       toolCategories: profile.toolCategories,
+      tools: profile.defaultTools,
     });
     if (this.governance) {
       agentLoop.setSCPClient(this.governance.scp);
     }
     operator.attachArsenal(this.arsenal, agentLoop);
+    // [Phase-2] Give the operator the shared board ONLY when swarm coordination is on — so the
+    // baseline (coordination off) keeps the solo-operator prompt with zero shared context.
+    if (this.coordinationEnabled) operator.attachBoard(this.packBoard);
 
     // If a white-box source was already set (repo ingested before this operator
     // spawned), hand it to the new operator so it also sees the source excerpt.
@@ -1149,6 +1463,21 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   }
 
   /**
+   * Coordination telemetry — the machine-readable artifact that distinguishes a coordinated swarm
+   * run from N independent agents: how many findings became shared leads, how many spawned targeted
+   * follow-up work, and how many distinct findings were chased. Zero across the board (with
+   * `enabled:false`) is the single-agent-equivalent baseline.
+   */
+  public getCoordinationStats(): { enabled: boolean; leadsPosted: number; followupsSpawned: number; uniqueFindingsChased: number } {
+    return {
+      enabled: this.coordinationEnabled,
+      leadsPosted: this.leadsPosted,
+      followupsSpawned: this.followupsSpawned,
+      uniqueFindingsChased: this.spawnedFollowups.size,
+    };
+  }
+
+  /**
    * Get command status
    */
   public getStatus(): {
@@ -1161,8 +1490,20 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     vault: ReturnType<EvidenceVault['getStats']>;
     opsec: ReturnType<OpsecController['getStats']>;
     activeMission: string | null;
+    stallReason: string | null;
+    progress: ScanProgressEvent[];
+    tasks: Array<{
+      id: string;
+      name: string;
+      phase: string;
+      status: string;
+      operatorType: string;
+      assignedTo?: string;
+      result?: { success: boolean; output?: string; error?: string; findings?: string[] };
+    }>;
   } {
     const activeMission = this.mission.getActiveMission();
+    const taskQueue = this.mission.getTaskQueue();
 
     return {
       name: this.name,
@@ -1174,6 +1515,24 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       vault: this.vault.getStats(),
       opsec: this.opsec.getStats(),
       activeMission: activeMission?.id || null,
+      stallReason: this.stallReason,
+      progress: [...this.progressEvents],
+      tasks: activeMission
+        ? taskQueue.getForMission(activeMission.id).map(task => ({
+            id: task.id,
+            name: task.name,
+            phase: task.phase,
+            status: task.status,
+            operatorType: task.operatorType,
+            assignedTo: task.assignedTo,
+            result: task.result ? {
+              success: task.result.success,
+              output: task.result.output,
+              error: task.result.error,
+              findings: task.result.findings,
+            } : undefined,
+          }))
+        : [],
     };
   }
 
@@ -1208,6 +1567,7 @@ export interface Tempest {
   targetEnv: TargetEnvironment;
   vault: EvidenceVault;
   arsenal: Arsenal;
+  approval: ApprovalController;
   opsec: OpsecController;
   comms: CommsChannel;
   analysis: AnalysisEngine;
@@ -1255,6 +1615,7 @@ export function createTempest(config: TempestConfig): Tempest {
     targetEnv: command.targetEnv,
     vault: command.vault,
     arsenal: command.arsenal,
+    approval: command.approval,
     opsec: command.opsec,
     comms: command.comms,
     analysis: command.analysis,
@@ -1429,3 +1790,16 @@ export function getBanner(): string {
 
 // Default export
 export default createTempest;
+
+export * from './threat-intel/feed.js';
+export * from './threat-intel/correlation.js';
+export * from './threat-intel/vault.js';
+export * from './llm/tool-call-boundary.js';
+export * from './evidence/retest.js';
+export * from './deception/honeytokens.js';
+export * from './integrations/alerts.js';
+export * from './persistence/supabase.js';
+export * from './persistence/migrations.js';
+export * from './mission/recovery.js';
+export * from './dfir/toolkit.js';
+export * from './llm/context-compression.js';

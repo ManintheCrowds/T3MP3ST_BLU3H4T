@@ -4,6 +4,12 @@ T3MP3ST needs contributions from prompt engineers, cyber operators, bug bounty h
 
 The best contributions make the system more capable while making its evidence and authority boundaries clearer.
 
+The canonical repository and tracker are
+[`elder-plinius/T3MP3ST`](https://github.com/elder-plinius/T3MP3ST). Open issues
+and pull requests there against `main`. The project uses focused branches,
+squash merges, green exact-head CI, and does not permit force-pushing published
+review history.
+
 ## High-Value Contribution Types
 
 - Add a tool adapter in `src/arsenal/catalog.ts`.
@@ -41,13 +47,21 @@ Prompt packs should include:
 
 ## Review Standard
 
-Before opening a PR:
+Behavior changes must include outcome-oriented regression coverage. A change
+with no relevant tests is blocked. Changed executable lines should reach at
+least 50% coverage; documentation-only and metadata-only changes may mark this
+not applicable with a reason. Trust-boundary, scope, evidence, provider,
+installation, and release changes also need the focused checks for that risk.
+
+Before opening a PR, run the same correctness gate used by CI:
 
 ```bash
-npm run typecheck
-npm test
-npm run doctor
+npm run test:pr
 ```
+
+For changes that affect claims, run modes, agent/tool execution, target scope,
+egress, redaction, reports, or benchmark artifacts, include a contribution
+receipt using [`docs/CONTRIBUTION_RECEIPTS.md`](docs/CONTRIBUTION_RECEIPTS.md).
 
 If the API is running:
 
@@ -55,6 +69,37 @@ If the API is running:
 npm run arsenal:smoke
 npm run field:drill
 ```
+
+Follow the full [Pull Request Delivery Guide](docs/PULL_REQUEST_DELIVERY.md)
+before requesting review. In particular, run:
+
+```bash
+git diff --name-status upstream/main...HEAD
+```
+
+The PR must stay scoped to its title. Do not include stale-base deletions,
+unrelated provider/config churn, benchmark fixture removals, provenance doc
+removals, or safety-test removals. If the branch has drifted, recreate it from
+current `main` and reapply only the intended change.
+
+When a contribution uses an earlier PR as notes, reference material, or a code
+source, say so in the **Prior work and attribution** section. Identify adapted
+paths or concepts and describe the fresh verification applied; prior review and
+CI do not transfer to a new head. For focused implementations derived from
+[PR #163](https://github.com/elder-plinius/T3MP3ST/pull/163), thank and mention
+`@xxmafiaxxx` in both the PR body and the issue completion comment. The
+[decomposition roadmap](.aiwg/planning/pr-163-decomposition-roadmap.md) defines
+the execution order and closeout evidence for issues #171–#183.
+
+Maintainers run `npm run test:release` and `npm audit --audit-level=high` against
+the exact release tag before publishing. The tag workflow creates one
+deterministic source ZIP, verifies it, records SHA-256 checksums, and retains a
+Sigstore provenance bundle. A green PR gate is necessary for review and merge,
+but it is not release certification.
+
+Do not include secrets, private tracker content, unlicensed corpora, or
+uncoordinated vulnerability details. Use the disclosure channel in
+`SECURITY.md` for security-sensitive reports.
 
 ## Style
 

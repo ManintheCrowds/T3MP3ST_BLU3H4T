@@ -6,7 +6,7 @@
 // LLM CONFIGURATION
 // =============================================================================
 
-export type LLMProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'codex' | 'mock' | 'local' | 'local-agent';
+export type LLMProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'codex' | 'mock' | 'local' | 'local-agent';
 
 export interface LLMConfig {
   provider: LLMProvider;
@@ -16,6 +16,12 @@ export interface LLMConfig {
   maxTokens?: number;
   temperature?: number;
   timeout?: number;
+  /**
+   * When true, force native Ollama / OpenAI-compatible function calling. When
+   * false, always use text-based tool contract injection. When unset, probe
+   * on the first call and cache per-model.
+   */
+  nativeTools?: boolean;
   /**
    * Ordered model/provider ladder to fall back to when the PRIMARY model fails for
    * ANY reason it can't self-recover from — hard errors after same-model retries
@@ -79,6 +85,13 @@ export interface LLMToolDefinition {
       enum?: string[];
       items?: { type: string };
       default?: unknown;
+      properties?: Record<string, {
+        type: string;
+        description?: string;
+        enum?: string[];
+      }>;
+      required?: string[];
+      additionalProperties?: boolean;
     }>;
     required?: string[];
   };
@@ -229,6 +242,9 @@ export interface Finding {
   exploitedAt?: number;
   /** Result of the live verification gate — present once verifyFinding() has run. */
   verifyGate?: { passed: boolean; provenance: 'none' | 'context' | 'tool'; reasons: string[]; checkedAt: number };
+  /** Original severity asserted by the model before the provenance cap downgraded
+   *  `severity` for unverified findings (none=low, context=medium, tool=unchanged). */
+  assertedSeverity?: Severity;
 }
 
 export interface Evidence {
@@ -388,6 +404,32 @@ export interface Message {
 // TOOL TYPES
 // =============================================================================
 
+/** A tool's risk tier — the catalog's `risk` vocabulary. Drives the approval + spicy-warning gate
+ *  (see src/arsenal/approval.ts): intrusive/credential/dangerous require approval; credential/dangerous
+ *  additionally fire a loud warning. Absent/safe/active tools are ungated. */
+export type RiskTier = 'local_read' | 'passive' | 'active' | 'intrusive' | 'credential' | 'dangerous';
+
+/** Structured error categories for tool failures — enables LLM feedback without leaking internals. */
+export enum ToolErrorCategory {
+  ScopeDenied = 'scope_denied',
+  ToolNotFound = 'tool_not_found',
+  Timeout = 'timeout',
+  ExecutionError = 'execution_error',
+  ValidationError = 'validation_error',
+}
+
+/** Structured error thrown by tool execution — carries category for LLM feedback and optional tool name. */
+export class ToolError extends Error {
+  constructor(
+    public readonly category: ToolErrorCategory,
+    message: string,
+    public readonly toolName?: string,
+  ) {
+    super(message);
+    this.name = 'ToolError';
+  }
+}
+
 export interface CustomTool {
   name: string;
   description: string;
@@ -395,6 +437,8 @@ export interface CustomTool {
   handler: (context: ToolContext) => Promise<ToolResult>;
   parameters?: ToolParameter[];
   requiredPermissions?: string[];
+  /** Risk tier carried from the catalog when the tool is a minted adapter — gates approval. */
+  riskTier?: RiskTier;
 }
 
 export interface ToolParameter {
@@ -403,6 +447,26 @@ export interface ToolParameter {
   description: string;
   required: boolean;
   default?: unknown;
+  /** Allowed values — constrains the parameter to a fixed set. */
+  enum?: (string | number)[];
+  /** Schema for array items (when type === 'array'). */
+  items?: {
+    type: string;
+    description?: string;
+    properties?: Record<string, ToolParameter>;
+  };
+  /** Nested object properties (when type === 'object'). */
+  properties?: Record<string, ToolParameter>;
+  /** Whether additional properties are allowed on object parameters. */
+  additionalProperties?: boolean;
+}
+
+/** A single validation error produced by validateToolArgs. */
+export interface ToolValidationError {
+  field: string;
+  message: string;
+  received: unknown;
+  expected: string;
 }
 
 export interface ToolContext {
@@ -416,12 +480,15 @@ export interface ToolContext {
  * Simplified finding for tool results (tools don't have full context)
  */
 export interface ToolFinding {
-  title: string;
-  severity: Severity;
-  details: string;
-  cvss?: number;
-  cve?: string[];
-  remediation?: string;
+title: string;
+severity: Severity;
+details: string;
+cvss?: number;
+cve?: string[];
+cwe?: string[];
+remediation?: string;
+/** Optional machine evidence attached at the tool boundary (e.g. browser screenshots). */
+evidence?: { type: 'screenshot' | 'output' | 'request' | 'response'; content: string; timestamp: number; metadata?: Record<string, unknown> }[];
   /**
    * How this finding was produced — the provenance flag the honesty gate keys on:
    *  'tool'  = parsed from real tool output (has provenance, can be verified)
@@ -543,6 +610,21 @@ export interface Appendix {
 // EVENT TYPES
 // =============================================================================
 
+export interface ScanProgressEvent {
+  id: string;
+  timestamp: number;
+  kind: 'task_started' | 'thinking' | 'tool_call' | 'tool_result' | 'task_completed' | 'task_failed';
+  operatorId: string;
+  callsign: string;
+  archetype: OperatorArchetype;
+  taskId?: string;
+  taskName?: string;
+  toolName?: string;
+  source?: 'agent' | 'backend_seeded';
+  detail: string;
+  success?: boolean;
+}
+
 export interface CommandEvents {
   'command:started': void;
   'command:stopped': void;
@@ -556,12 +638,25 @@ export interface CommandEvents {
   'target:owned': { target: Target; operatorId: string };
   'detection:triggered': DetectionEvent;
   'mission:phase_changed': { missionId: string; phase: KillChainPhase };
+  'scan:progress': ScanProgressEvent;
   'abort:recommended': string;
   'governance:mission_blocked': { reason: string };
   // Detection engine events (Phase 2)
   'detection:alert_raised': { ruleId: string; severity: Severity; sourceIP?: string };
   'detection:ai_agent_detected': { sourceIP: string; frameworkId?: string; confidence: number };
   'detection:correlated': { alertCount: number; severity: Severity; sourceIP?: string };
+  /** A capability-approval gate decision (allowed/denied) on an intrusive/dangerous tool — bridged to
+   *  the dashboard's live approval/audit feed. Structural match for arsenal/approval.ts ApprovalRecord. */
+  'approval:decision': {
+    tool: string;
+    risk: RiskTier;
+    operator?: string;
+    target?: string;
+    action: string;
+    outcome: string;
+    spicy: boolean;
+    at: number;
+  };
 }
 
 // =============================================================================

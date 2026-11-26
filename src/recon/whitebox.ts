@@ -8,24 +8,47 @@
  * itself makes (worker + orchestrator models). It is otherwise pure of network
  * side effects.
  *
- * SCOPE CAVEAT (inherited from code-ingest): the ingest layer is a PYTHON-ONLY,
- * regex "AST-lite" prototype — see recon/code-ingest.ts. It selects which Python
- * blocks to analyze first by security exposure; anything non-`.py` or imported
- * from outside the scan scope is invisible. Do NOT describe this as "any repo".
+ * SCOPE CAVEAT (inherited from code-ingest): the ingest layer extracts blocks via
+ * web-tree-sitter for Python/JS/TS/Go/Java/C/C++ (Python uses the regex "AST-lite"
+ * path; other languages fail-open to [] — never the Python regex — on a grammar
+ * miss or parse error) — see recon/code-ingest.ts + recon/ts-parse.ts. It selects which
+ * blocks to analyze first by security exposure; a language without a bundled grammar,
+ * or code imported from outside the scan scope, is invisible. Do NOT describe this as
+ * "any repo" or "any language".
+ *
+ * KNOWN EXTRACTION LIMITS (fail-safe — these shapes are silently NOT extracted or
+ * under-linked, never mis-extracted; all strictly better than the prior Python-only
+ * ingest, and tracked as follow-ups):
+ *   - JS/TS: declarations plus name-bound function values (`const f = () => …`,
+ *     `obj.f = …`, `{ f: … }`, class-field arrows incl. `#private`) are captured.
+ *     Definitions with no name-to-function binding are not: HOC-wrapped values
+ *     (`const h = withAuth(fn)`) and anonymous callbacks
+ *     (`app.get('/x', (req, res) => …)`).
+ *   - C++: only free functions are captured. In-class and out-of-line (`Class::method`)
+ *     member methods are not — a materially narrower C++ story than "full support".
+ *   - Entry-point elevation for non-Python code relies on name heuristics only; no
+ *     language emits `decorators`, so annotation-based routes (Spring `@GetMapping`,
+ *     TS `@Get()`, Express `app.get(...)`) are not elevated to `exposed_externally`.
+ *   - Call-graph/reachability: buildCallGraph strips a block's signature line before
+ *     scanning for callees (kept unchanged for Python-benchmark stability), so a
+ *     SINGLE-LINE non-Python definition (`func F(u) { return G(u) }`) misses the call
+ *     on that line — the block is still extracted and sink-classified, only the edge
+ *     is lost.
  */
 
 import { config } from '../config/index.js';
 import {
   ingestRepository,
-  createPythonIngestConfig,
+  createMultiLangIngestConfig,
   packAnalysisUnits,
 } from './code-ingest.js';
 import { DecompositionOrchestrator } from '../orchestration/index.js';
 import type { DecompositionConfig } from '../orchestration/index.js';
 import type { LLMProvider } from '../types/index.js';
-import { realpathSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { homedir, tmpdir } from 'node:os';
+import { join as joinPath, isAbsolute, relative, resolve, sep } from 'node:path';
 
 /**
  * Default worker-source token budget when building a source blob directly from a
@@ -55,6 +78,100 @@ export class RepoPathError extends Error {
     super(message);
     this.name = 'RepoPathError';
   }
+}
+
+export class RepoCloneError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RepoCloneError';
+  }
+}
+
+export interface ResolvedRepoSource {
+  repoPath: string;
+  source: 'local' | 'github';
+  cleanup(): void;
+}
+
+function isGitHubHttpsRepoUrl(input: string): boolean {
+  try {
+    const url = new URL(input);
+    return url.protocol === 'https:' &&
+      url.hostname.toLowerCase() === 'github.com' &&
+      /^\/[^/]+\/[^/]+(?:\.git)?\/?$/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function getGitHubRepoToken(): string | undefined {
+  return process.env.T3MP3ST_GITHUB_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim();
+}
+
+export function cloneGitHubRepoForAnalysis(repoUrl: string): ResolvedRepoSource {
+  if (!isGitHubHttpsRepoUrl(repoUrl)) {
+    throw new RepoCloneError('repoUrl must be an https://github.com/<owner>/<repo> URL');
+  }
+
+  const token = getGitHubRepoToken();
+  if (!token) {
+    throw new RepoCloneError('private GitHub repo scans require T3MP3ST_GITHUB_TOKEN or GITHUB_TOKEN');
+  }
+
+  const tempRoot = mkdtempSync(joinPath(tmpdir(), 't3mp3st-repo-'));
+  const cloneDir = joinPath(tempRoot, 'repo');
+  const askPassPath = joinPath(tempRoot, 'git-askpass.sh');
+  try {
+    writeFileSync(
+      askPassPath,
+      [
+        '#!/bin/sh',
+        'case "$1" in',
+        "*Username*) printf '%s\\n' 'x-access-token' ;;",
+        '*) printf "%s\\n" "$T3MP3ST_GIT_TOKEN" ;;',
+        'esac',
+        '',
+      ].join('\n'),
+      { mode: 0o700 },
+    );
+    execFileSync('git', [
+      '-c', 'credential.helper=',
+      'clone',
+      '--depth', '1',
+      '--filter=blob:none',
+      repoUrl,
+      cloneDir,
+    ], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      env: {
+        ...process.env,
+        GIT_ASKPASS: askPassPath,
+        GIT_TERMINAL_PROMPT: '0',
+        T3MP3ST_GIT_TOKEN: token,
+      },
+    });
+
+    return {
+      repoPath: realpathSync(cloneDir),
+      source: 'github',
+      cleanup: () => { rmSync(tempRoot, { recursive: true, force: true }); },
+    };
+  } catch (error) {
+    rmSync(tempRoot, { recursive: true, force: true });
+    const message = error instanceof Error ? error.message.replaceAll(token, '[REDACTED]') : 'git clone failed';
+    throw new RepoCloneError(`GitHub repo clone failed: ${message}`);
+  }
+}
+
+export function resolveRepoSourceForAnalysis(input: unknown): ResolvedRepoSource {
+  if (typeof input === 'string' && isGitHubHttpsRepoUrl(input.trim())) {
+    return cloneGitHubRepoForAnalysis(input.trim());
+  }
+  return {
+    repoPath: resolveContainedRepoPath(input),
+    source: 'local',
+    cleanup: () => { /* local repos are caller-owned; nothing to remove */ },
+  };
 }
 
 /**
@@ -114,27 +231,31 @@ export function resolveContainedRepoPath(input: unknown): string {
  * suitable for handing to `TempestCommand.setWhiteboxSource` (or any consumer
  * that wants the highest-priority code first).
  *
- * @param repoPath  Absolute path to a LOCAL repo you own.
+ * @param repoPath  Absolute path to a LOCAL repo you own, or a GitHub HTTPS repo URL with token auth.
  * @param tokenBudget  Packing budget in tokens (default 24000).
  */
 export function ingestRepoToSourceContext(
   repoPath: string,
   tokenBudget = 24000,
 ): RepoSourceContext {
-  const safePath = resolveContainedRepoPath(repoPath);
-  const result = ingestRepository(createPythonIngestConfig(safePath));
-  const packed = packAnalysisUnits(result.analysisUnits, tokenBudget);
-  return {
-    sourceContext: packed.text,
-    stats: result.stats,
-    includedUnits: packed.includedUnits.length,
-    droppedUnits: packed.droppedUnits.length,
-  };
+  const source = resolveRepoSourceForAnalysis(repoPath);
+  try {
+    const result = ingestRepository(createMultiLangIngestConfig(source.repoPath));
+    const packed = packAnalysisUnits(result.analysisUnits, tokenBudget);
+    return {
+      sourceContext: packed.text,
+      stats: result.stats,
+      includedUnits: packed.includedUnits.length,
+      droppedUnits: packed.droppedUnits.length,
+    };
+  } finally {
+    source.cleanup();
+  }
 }
 
 /** Options for a full white-box decomposition analysis run. */
 export interface WhiteboxAnalysisOptions {
-  /** Absolute path to a LOCAL repo you own. */
+  /** Absolute path to a LOCAL repo you own, or a GitHub HTTPS repo URL with token auth. */
   repoPath: string;
   /** The offensive objective — only the orchestrator model sees this. */
   objective: string;
@@ -199,41 +320,45 @@ export async function runWhiteboxAnalysis(
   opts: WhiteboxAnalysisOptions,
 ): Promise<WhiteboxAnalysisResult> {
   const { repoPath, objective, maxRounds } = opts;
-  const safePath = resolveContainedRepoPath(repoPath);
+  const source = resolveRepoSourceForAnalysis(repoPath);
 
-  // 1) ingest LOCAL source, security-rank the blocks
-  const result = ingestRepository(createPythonIngestConfig(safePath));
+  // 1) ingest source, security-rank the blocks
+  try {
+    const result = ingestRepository(createMultiLangIngestConfig(source.repoPath));
 
-  // 2) pack into a generous source view (orchestrator re-packs per-worker itself)
-  const packed = packAnalysisUnits(result.analysisUnits, DEFAULT_ANALYSIS_SOURCE_BUDGET);
-  const sourceContext = packed.text;
+    // 2) pack into a generous source view (orchestrator re-packs per-worker itself)
+    const packed = packAnalysisUnits(result.analysisUnits, DEFAULT_ANALYSIS_SOURCE_BUDGET);
+    const sourceContext = packed.text;
 
   // Fail loud ONLY when there is genuinely NO source to analyze: 0 ingestable source files
-  // (non-Python or empty repo). A valid Python repo that has files but no def/class (a
-  // module-level-only script) yields 0 blocks -> empty packed text; that used to run the
-  // orchestrator, so we do NOT regress it into a 500 — gate the throw on the file count, not
-  // on empty packed text, and let a files>0 repo proceed as before.
-  if (result.stats.files === 0) {
-    throw new Error(
+  // (no supported-language files, or empty repo). A valid repo that has files but no
+  // def/class/func (a module-level-only script) yields 0 blocks -> empty packed text; that
+  // used to run the orchestrator, so we do NOT regress it into a 500 — gate the throw on the
+  // file count, not on empty packed text, and let a files>0 repo proceed as before.
+    if (result.stats.files === 0) {
+      throw new Error(
       'white-box analysis has no analyzable source: the repo has 0 ingestable source files ' +
-      '(non-Python, or empty). Point repoPath at a Python codebase.',
-    );
-  }
+        '(no supported-language source, or empty). Point repoPath at a code repository.',
+      );
+    }
 
   // 3) construct the orchestrator with a sane default config (mirrors decompose.mjs)
-  const decompConfig = buildDecompositionConfig();
-  if (typeof maxRounds === 'number' && maxRounds > 0) {
-    decompConfig.maxRounds = maxRounds;
-  }
-  const orch = new DecompositionOrchestrator(decompConfig);
+    const decompConfig = buildDecompositionConfig();
+    if (typeof maxRounds === 'number' && maxRounds > 0) {
+      decompConfig.maxRounds = maxRounds;
+    }
+    const orch = new DecompositionOrchestrator(decompConfig);
 
   // 4) run the decomposition loop (LLM calls happen HERE)
-  const decomposition = await orch.run(objective, sourceContext);
+    const decomposition = await orch.run(objective, sourceContext);
 
-  return {
-    ingestStats: result.stats,
-    entryPoints: result.entryPoints,
-    unitCount: result.analysisUnits.length,
-    decomposition,
-  };
+    return {
+      ingestStats: result.stats,
+      entryPoints: result.entryPoints,
+      unitCount: result.analysisUnits.length,
+      decomposition,
+    };
+  } finally {
+    source.cleanup();
+  }
 }

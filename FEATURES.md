@@ -120,12 +120,14 @@
 |-----------|-------|---------------|--------|
 | **RECON** | Reconnaissance | TA0043 | [x] Implemented |
 | **SCANNER** | Discovery | TA0007 | [x] Implemented |
-| **EXPLOITER** | Initial Access | TA0001, TA0002 | [x] Implemented |
-| **INFILTRATOR** | Lateral Movement | TA0008, TA0004 | [x] Implemented |
-| **EXFILTRATOR** | Exfiltration | TA0009, TA0010 | [x] Implemented |
-| **GHOST** | Persistence | TA0003, TA0005 | [x] Implemented |
-| **COORDINATOR** | C2 | TA0011 | [x] Implemented |
+| **EXPLOITER** | Initial Access | TA0001, TA0002 | ⚠️ Experimental¹ |
+| **INFILTRATOR** | Lateral Movement | TA0008, TA0004 | ⚠️ Experimental¹ |
+| **EXFILTRATOR** | Exfiltration | TA0009, TA0010 | ⚠️ Experimental¹ |
+| **GHOST** | Persistence | TA0003, TA0005 | ⚠️ Experimental¹ |
+| **COORDINATOR** | C2 | TA0011 | ⚠️ Experimental¹ |
 | **ANALYST** | Reporting | - | [x] Implemented |
+
+¹ **Experimental** = runs the SAME real, tool-backed ReAct loop as RECON/SCANNER (real tools, not stubs), but end-to-end swarm exploitation is **unbenchmarked and unproven** — 0 executed exploits in full-chain runs, and the headline benchmark numbers came from a single agent, not the coordinated 8-operator cell. See the README status table + WHITEPAPER for the honest limits.
 
 ### Operator Features
 - [x] State management (idle, tasked, executing, cooldown, burned)
@@ -275,14 +277,14 @@
 - [ ] Tool health checks
 
 ### Whitelisted CLI Tools (via API)
-- [x] nmap, curl, wget, dig, host, whois
-- [x] nikto, gobuster, ffuf, dirb
-- [x] sqlmap, wfuzz, hydra
-- [x] openssl, base64, xxd, strings
-- [x] file, exiftool, binwalk
-- [ ] nuclei, subfinder, amass
-- [ ] metasploit integration
-- [ ] burp suite integration
+> Availability tiers: **default** = wired without extra flags; **opt-in** = catalog-gated
+> behind `T3MP3ST_FULL_ARSENAL`; **approval-gated** = also requires per-call approval
+> (real auth/attack traffic). See the `35 default / 83 opt-in` split in the README.
+Real, re-derivable catalog (`verify-claims`): **35 built-in (default) + 48 opt-in adapters = 83**.
+- [x] **default built-ins** (callable with no flag) — `nmap_scan, nuclei_scan, ffuf_fuzz, curl_request, port_scan, subdomain_enum, http_request, xss_scan, sqli_scan, dns_lookup`, … (35)
+- [x] **opt-in adapters** (`T3MP3ST_FULL_ARSENAL`) — nuclei, subfinder, httpx, naabu, katana, ffuf, gobuster, feroxbuster, nikto, dalfox, sqlmap · semgrep, gitleaks, trufflehog, trivy, grype, osv-scanner, checkov · slither, mythril, echidna, foundry, solhint · openssl, john, hashcat, radare2, apktool, jadx, exiftool, binwalk, yara (48)
+- [x] **approval-gated post-ex drivers** (opt-in **+** human approval **+** local CLI installed) — **metasploit** (`msfconsole`, riskTier `dangerous`), **hydra** (`credential`); bloodhound is import-only (graph pipeline)
+- [ ] burp suite integration _(genuinely not integrated)_
 
 ### Packet analysis (Wireshark / tshark)
 - [ ] `tshark_pcap_summary` — protocol hierarchy summary of an existing pcap (defensive)
@@ -295,6 +297,11 @@
 ## 7. Pliny Specials (defensive names — EP-3)
 
 Canonical mapping: [PLINY_DEFENSIVE_RENAME.md](docs/PLINY_DEFENSIVE_RENAME.md) · code: `src/pliny/defensive_aliases.ts`
+
+> **Upstream note:** elder-plinius/T3MP3ST retired the nine specials from shipping
+> routes. This fork retains the **defensive rename** framing and any live wiring
+> documented below — treat upstream “RETIRED” checklists as historical for red-team
+> product paths; blue-hat status rows here are authoritative for BLU3H4T.
 
 ### The Nine Specials (legacy → defensive)
 
@@ -606,16 +613,11 @@ Canonical mapping: [PLINY_DEFENSIVE_RENAME.md](docs/PLINY_DEFENSIVE_RENAME.md) �
 - [x] `GET /api/health` - Server health
 - [x] `GET /api/llm/status` - LLM connection status
 
-### Pliny Endpoints
-- [x] `POST /api/pliny/leviathan/engage` - Kill chain orchestration
-- [x] `POST /api/pliny/sphinx/validate` - Vulnerability validation
-- [x] `POST /api/pliny/gorgon/strike` - Precision exploitation
-- [x] `POST /api/pliny/typhon/inject` - Payload encoding
-- [x] `POST /api/pliny/griffin/harvest` - Secret harvesting
-- [x] `POST /api/pliny/simurgh/hunt` - Zero-day research
-- [x] `POST /api/pliny/cerberus/escalate` - Privilege escalation
-- [ ] `POST /api/pliny/hydra/orchestrate` - Multi-vector attacks
-- [ ] `POST /api/pliny/arachne/chain` - Exploit chaining
+### Pliny Specials Endpoints — ❌ RETIRED (removed 2026-06)
+The `/api/pliny/*` "adversarial engine" routes were **removed**. They were static payload-catalog
+lookups with no measured uplift to the benchmark and were never on the hunt path. The live offensive
+surface is the mission-control API (`/api/mission/*`), the arsenal (`/api/tools/*`), and the recon
+engine — documented in the sections above. No `/api/pliny/*` route exists in the server today.
 
 ### Tool Endpoints
 - [x] `POST /api/tools/execute` - Execute whitelisted tool
@@ -644,16 +646,9 @@ Canonical mapping: [PLINY_DEFENSIVE_RENAME.md](docs/PLINY_DEFENSIVE_RENAME.md) �
 ## 14. MCP Server (Agent Integration)
 
 ### MCP Tools Exposed
-- [x] `pliny_leviathan` - Kill chain orchestration
-- [x] `pliny_sphinx` - Vulnerability validation
-- [x] `pliny_gorgon` - Precision exploitation
-- [x] `pliny_cerberus` - Privilege escalation
-- [x] `pliny_typhon` - Payload encoding
-- [x] `pliny_griffin` - Secret harvesting
-- [x] `pliny_simurgh` - Zero-day research
-- [x] `pliny_hydra` - Multi-vector attacks
-- [x] `pliny_arachne` - Exploit chaining
-- [x] `security_recon` - Network reconnaissance
+The `pliny_*` MCP tools were **retired** (2026-06) alongside the `/api/pliny` routes — they were
+catalog lookups, not engines. The MCP server exposes the real, tool-backed surface:
+- [x] `security_recon` - Network reconnaissance (nmap / DNS / HTTP / fingerprinting, every finding traces to live tool output)
 
 ### MCP Features
 - [x] Tool definitions with JSON Schema
@@ -1096,5 +1091,5 @@ Source: `src/resources/ai-redteam-playbook.ts`, `docs/ANTI_AI_REDTEAM_DESIGN.md`
 
 ---
 
-*Last updated: 2026-07-07*
+*Last updated: 2026-10-14*
 *Version: 2.0.0*

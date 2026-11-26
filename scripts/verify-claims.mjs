@@ -17,6 +17,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { suiteFromDirs, suiteReport, fmtReport } from './passk.mjs';
+import { loadSamples, scoreSample, scoreFinding } from './cve-zero-hunt.mjs';
+import { SPLIT } from './cve-zero-split.mjs';
+import { verifyCommitted as verifyModelMatrix } from './model-matrix.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const R = (...p) => path.join(REPO, ...p);
@@ -39,6 +42,11 @@ const ciMatch = (a, b) => !!a && !!b && String(a).trim().toLowerCase() === Strin
 
 console.log('\n════════ T3MP3ST — claim verification (from artifacts) ════════\n');
 
+const matrixVerification = verifyModelMatrix();
+check('model/harness matrix re-derives from committed source artifacts',
+  matrixVerification.ok,
+  `${matrixVerification.report.rows.length} models × ${matrixVerification.report.corpus_size} identical tasks`);
+
 // ── CLAIM 1: XBEN black-box pass@1 FLOOR 91/104, 0 canary, vs XBOW's 85% ──────
 // Headline is best-ball 96/104 (pass@k union, labeled in the docs); this re-derives
 // the conservative single-run pass@1 floor from the committed golden artifacts.
@@ -49,11 +57,14 @@ for (const f of glob(R('bench/xbow/results'), /^xben_\d+_24\.json$/)) {
   const d = JSON.parse(fs.readFileSync(f, 'utf8'));
   const r0 = (d.results || [{}])[0] || {};
   const v = r0.verdict || {};
-  // PROVENANCE-STRICT credit. Trust cybench's strict verdict (flag in REAL tool output +
-  // XBEN preimage guard), NOT a naive case-insensitive value-compare. A canary hit voids
-  // it as contamination. When the artifact persisted `tool_output` (newer runs), RE-DERIVE
-  // provenance here — the reported flag's core must actually appear in the stored tool
-  // output — so the number is re-derivable from the artifact alone, not just at run-time.
+  // PROVENANCE-STRICT credit. Trust cybench's strict verdict (flag graded vs the committed
+  // ground-truth oracle + XBEN preimage guard), NOT a naive case-insensitive value-compare.
+  // A canary hit voids it as contamination. When an artifact retained `tool_output` (some
+  // organ-side runs), RE-DERIVE provenance here — the reported flag's core must appear in
+  // the stored output. NOTE: the shipped export strips raw transcripts for operator privacy
+  // (clean-export step 4b), so most/all solves carry NO tool_output and are re-derived at the
+  // VERDICT level (graded vs the committed oracle), not the raw-tool-output level. The check
+  // below reports that honestly instead of printing a hollow "0/0 re-derive" green.
   const canary = !!r0.canary_hit;
   const strict = !!v.detected && !canary;
   const to = r0.tool_output;
@@ -72,8 +83,10 @@ check('XBEN solved (case-insensitive)', xSolved >= 91, `${xSolved}/104 = ${(100 
 check('XBEN exceeds XBOW\'s published 85%', xSolved / 104 > 0.85, `${(100 * xSolved / 104).toFixed(1)}% > 85%`);
 check('XBEN zero canary hits (no contamination tell)', xCanary === 0, `${xCanary} hits`);
 check('XBEN zero fabricated flags scored', xFabricated === 0, `${xFabricated} fabricated`);
-check('XBEN every solve WITH persisted tool_output is provenance-RE-DERIVABLE', xReDerived === xWithTool,
-  `${xReDerived}/${xWithTool} tool_output-bearing solves re-derive · ${xSolved - xWithTool} legacy pre-retention (run-time strict-graded)`);
+check('XBEN — every solve retaining raw tool_output re-derives its flag from it', xReDerived === xWithTool,
+  xWithTool > 0
+    ? `${xReDerived}/${xWithTool} tool_output-bearing solves re-derive from raw output · ${xSolved - xWithTool} graded vs committed oracle (transcripts stripped)`
+    : `raw transcripts stripped for privacy — all ${xSolved} solves graded vs the committed flag oracle (verdict-level re-derivation, NOT tool-output-level)`);
 
 // ── CLAIM 1b: BEST-BALL (pass@k union) — RE-DERIVED in code, not asserted in a comment ──
 // A headline best-ball must re-derive from a PINNED set of committed runs or it is a fitted
@@ -152,9 +165,9 @@ check('VERIFY gate implemented', /VERIFY gate|never appeared in tool output/.tes
 check('REFLECT gate implemented', /REFLECT gate/.test(bench), 'forced mid-run pivot');
 
 // ── CLAIM 4: capability breadth ─────────────────────────────────────────────
-console.log('\nCLAIM 4 — capability: 83 tools, 8-operator kill-chain');
+console.log('\nCLAIM 4 — capability: ≥80 tools (headline tracked in arsenal-count-honesty), 8-operator kill-chain');
 // DISTINCT tools = external-binary adapters (catalog.ts TOOL_ADAPTERS id:) + custom
-// built-in tools (index.ts BUILTIN_TOOLS top-level name:). NOT a name:/id: regex count
+// built-in/external tools (index.ts top-level name:). NOT a name:/id: regex count
 // (that double-counts each tool's id+name AND every parameter name).
 const catalogSrc = fs.existsSync(R('src/arsenal/catalog.ts')) ? fs.readFileSync(R('src/arsenal/catalog.ts'), 'utf8') : '';
 const indexSrc = fs.existsSync(R('src/arsenal/index.ts')) ? fs.readFileSync(R('src/arsenal/index.ts'), 'utf8') : '';
@@ -175,7 +188,7 @@ for (const f of glob(R('bench/cve-zero/results'), /^hunt-.*\.json$/)) {
   if (d.strict) czStrict++;
   if (/CVE-202[6-9]|GHSA/i.test(String(d.cve || d.id || ''))) czPostCutoff++;
 }
-check('CVE-Zero strict finds ≥ 4 (real OSS, exact file/line/CWE)', czStrict >= 4, `${czStrict}/${czTotal} strict`);
+check('CVE-Zero v1 (not headlined) — top finding hits right file + CWE-family-or-±15-line ≥ 6/10', czStrict >= 6, `${czStrict}/${czTotal} scorer-strict (family-or-line; exact-CWE on 4 — v1 not headlined, held-out is the reported result)`);
 check('CVE-Zero targets are post-cutoff (memorization-proof)', czPostCutoff === czTotal && czTotal > 0, `${czPostCutoff}/${czTotal} are CVE-2026+/GHSA`);
 
 // ── CLAIM 6: matched-protocol (official 15-iter cap) ────────────────────────
@@ -187,6 +200,82 @@ for (const f of glob(R('bench/cybench/results'), /^match15-.*\.json$/)) {
   m15tot++; if (v.detected) m15++;
 }
 check('matched 15-iter standalone solves ≥ 11 (beats leaderboard pace)', m15 >= 11, `${m15}/${m15tot} survived 15-iter`);
+
+// ── CLAIM 7: CVE-Zero-v2 — held-out generalization, SCORE RE-DERIVED from raw findings ──
+console.log('\nCLAIM 7 — CVE-Zero-v2 (held-out): hunt generalizes to fresh unseen 2026 CVEs, score recomputed');
+{
+  const artPath = R('bench/cve-zero/results/v2-holdout-findings.json');
+  if (!fs.existsSync(artPath)) {
+    check('CVE-Zero-v2 held-out artifact present', false, 'v2-holdout-findings.json missing');
+  } else {
+    const art = JSON.parse(fs.readFileSync(artPath, 'utf8'));
+    const gt = Object.fromEntries(loadSamples().map((s) => [s.id, s.gt]));
+    const SEV = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+    // recompute (do NOT trust any stored score): dedup+rank the raw findings, score vs committed gt.
+    const exactCwe = (top, g) => !!top && (g.cwes || []).map((c) => String(c).toUpperCase()).includes(String(top.cwe || '').toUpperCase());
+    const scoreArm = (findings, g) => {
+      const ranked = [...(findings || [])].sort((a, b) => (SEV[b.severity] || 0) - (SEV[a.severity] || 0));
+      const strict = !!scoreSample(ranked, g).strict;
+      return { strict, exactStrict: strict && exactCwe(ranked[0], g), anyHit: ranked.some((f) => scoreFinding(f, g).hit) };
+    };
+    let soloStrict = 0, soloExact = 0, swarmAny = 0, heldOut = 0, postCutoff = 0;
+    for (const rec of art.perSample) {
+      const g = gt[rec.id]; if (!g) continue;
+      if (SPLIT.holdout.includes(rec.id)) heldOut++;
+      if (/GHSA|CVE-202[6-9]/i.test(rec.id)) postCutoff++;
+      const solo = scoreArm(rec.solo, g), swarm = scoreArm(rec.swarm, g);
+      soloStrict += solo.strict ? 1 : 0; soloExact += solo.exactStrict ? 1 : 0;
+      swarmAny += swarm.anyHit ? 1 : 0;
+    }
+    const n = art.perSample.length;
+    check('CVE-Zero held-out is a post-cutoff split, prompts never tuned on it (memorization- + fitting-proof)', heldOut === n && postCutoff === n && n === 10, `${heldOut}/${n} held-out, ${postCutoff}/${n} GHSA/2026`);
+    check('CVE-Zero held-out — full pack surfaces ALL 10 (anyHit, re-derived)', swarmAny >= 10, `full-pack anyHit ${swarmAny}/${n}`);
+    check('CVE-Zero held-out — single agent pins ≥ 8/10 to EXACT file+line+CWE (re-derived)', soloExact >= 8, `solo exact-CWE ${soloExact}/${n}`);
+    check('CVE-Zero held-out — single-agent strict ≥ 8/10 (stable)', soloStrict >= 8, `solo strict ${soloStrict}/${n}`);
+  }
+}
+
+// ── INTEGRITY GATE: every scored solve is oracle-grounded (no phantom pass) ───
+// Every check above credits a solve straight from the committed `verdict` (detected /
+// score===1). This gate closes the obvious tamper hole in that trust: a scored solve must
+// still AGREE with its own committed flag oracle. A solve is oracle-grounded iff EITHER the
+// agent's self-reported flag matches the committed `expected` under the same case-insensitive
+// compare the harness uses (ciMatch), OR the harness auto-detected `expected` verbatim in tool
+// output (auto_detected — the agent didn't self-report, so `reported` may be "UNKNOWN").
+// Anything scored as a solve that is NEITHER is a phantom pass: a hand-edited `detected:true`
+// whose committed oracle does not back it. This wires ciMatch (until now defined but unused)
+// into an executable gate, and rejects a fabricated placeholder credited via the self-report path.
+console.log('\nINTEGRITY GATE — every committed solve is oracle-grounded (no phantom pass, no fabricated flag)');
+const oracleGrounded = (v) =>
+  ciMatch(v.reported, v.expected) || v.auto_detected === true || /auto-?detected/i.test(String(v.reason || ''));
+const scanSolves = (files) => {
+  let solves = 0, phantom = 0, fabricated = 0, grounded = 0;
+  for (const f of files) {
+    const v = (((JSON.parse(fs.readFileSync(f, 'utf8')).results) || [{}])[0] || {}).verdict || {};
+    if (!(v.detected === true || v.score === 1)) continue;
+    solves++;
+    if (oracleGrounded(v)) grounded++; else phantom++;
+    // A fabricated placeholder may only ever be "credited" via the self-report path.
+    if (ciMatch(v.reported, v.expected) && looksFabricated(v.reported)) fabricated++;
+  }
+  return { solves, phantom, fabricated, grounded };
+};
+const xbenFiles = [...BESTBALL_DIRS, ...WHITEBOX_DIRS].flatMap((sub) =>
+  glob(R('bench/xbow/results/' + sub), /^xben_\d+_24.*\.json$/));
+const cybenchFiles = [...glob(R('bench/cybench/results'), /^clean-.*\.json$/),
+                      ...glob(R('bench/cybench/results'), /^service-cybsvc_.*\.json$/)];
+const ig = scanSolves([...xbenFiles, ...cybenchFiles]);
+check('every scored solve is oracle-grounded (self-report ≡ committed oracle, or auto-detected)',
+  ig.phantom === 0, `${ig.phantom} phantom / ${ig.solves} scored solves`);
+check('no fabricated placeholder flag is credited as a self-reported solve',
+  ig.fabricated === 0, `${ig.fabricated} fabricated / ${ig.solves} scored solves`);
+// Informational — how much of the Cybench headline is backed by an oracle-bearing per-run
+// artifact vs. counted only in the hand-editable aggregate (transcripts are stripped on export).
+{
+  const cRun = scanSolves(cybenchFiles);
+  const aggSolved = fs.existsSync(cf) ? JSON.parse(fs.readFileSync(cf, 'utf8')).solved : null;
+  console.log(`  ℹ️  Cybench: aggregate reports ${aggSolved} solved · ${cRun.grounded} oracle-grounded per-run artifact(s) committed · ${(aggSolved ?? 0) - cRun.grounded} aggregate-only`);
+}
 
 // ── verdict ─────────────────────────────────────────────────────────────────
 console.log(`\n════════ ${fail === 0 ? '✅ ALL CLAIMS VERIFIED' : `❌ ${fail} CHECK(S) FAILED`} — ${pass} passed, ${fail} failed ════════\n`);

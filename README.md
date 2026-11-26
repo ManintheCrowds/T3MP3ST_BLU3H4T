@@ -26,6 +26,8 @@
 
 Protect your organization from unethical red teams — including autonomous AI attackers.
 
+![scores: re-derivable](https://img.shields.io/badge/scores-re--derivable-brightgreen) &nbsp; ![verify-claims 27/27](https://img.shields.io/badge/verify--claims-27%2F27-brightgreen) &nbsp; ![PRs welcome](https://img.shields.io/badge/PRs-welcome-purple) &nbsp; ![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue)
+
 ---
 
 ## What is BLU3H4T?
@@ -141,7 +143,7 @@ npm install
 npm run server        # War Room → http://127.0.0.1:3333/ui/
 ```
 
-Governance is **enabled by default** on the War Room server (SCP, org-intent, HITL, risk tiers). Optional env vars:
+Governance is **enabled by default** on the War Room server (SCP, org-intent, HITL, risk tiers). In Settings you can also connect a local agent (Claude Code / Codex / Hermes / OpenCode / Oh My Pi). Optional env vars:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -156,9 +158,61 @@ For production deployments, set `T3MP3ST_AUTHORIZED_SCOPE` so med-tier tools can
 Connect a local agent (Claude Code / Codex / Hermes) in Settings, or set an API key:
 
 ```bash
-export OPENROUTER_API_KEY=...     # or ANTHROPIC_API_KEY
+```bash
+export OPENROUTER_API_KEY=...     # or VENICE_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
+export NOVITA_API_KEY=...         # Novita AI's hosted OpenAI-compatible API
+# xAI / Grok keys are intentionally unsupported on this fork — do not set XAI_API_KEY
 ```
 
+Novita AI is an opt-in third-party hosted provider. Requests send the selected
+model id, prompts/context, generated output, and request metadata to Novita;
+your API key authenticates those requests. Review Novita's current
+[privacy policy](https://novita.ai/legal/privacy-policy) and
+[terms](https://novita.ai/legal/terms-of-service) before using sensitive target
+data. T3MP3ST does not claim independent assurance for sensitive workloads.
+
+Slow local agents can be given more room with `T3MP3ST_LOCAL_AGENT_TIMEOUT_MS`
+for each CLI call, `T3MP3ST_TASK_TIMEOUT_MS` for mission tasks, and
+`T3MP3ST_GENERAL_TIMEOUT_MS` for planning requests. Values are milliseconds.
+
+Claude Code session reuse is disabled by default because a resumed coding-agent
+session may retain provider-side context and ambient tool authority outside the
+Arsenal receipt boundary. Operators who explicitly trust their local Claude
+Code configuration as a separate execution authority may set
+`T3MP3ST_TRUST_CLAUDE_SESSION=1`; reuse remains isolated to one task and the
+choice must not be treated as an Arsenal-enforced sandbox.
+
+Or run **fully offline** on your own model — no key, no cloud. Defaults to Ollama; point it at any OpenAI-compatible server (LM Studio, vLLM, llama.cpp):
+
+```bash
+ollama serve && ollama pull llama3
+export TEMPEST_LOCAL_BASE_URL=http://localhost:11434/api
+export TEMPEST_LOCAL_MODEL=llama3
+npm run build
+npx tempest
+```
+
+Check re-derivable claims:
+
+```bash
+npm run verify-claims
+```
+
+Step-by-step operator usage: [Getting Started](docs/GETTING_STARTED.md). Upstream CTF/bench docs remain under [docs/](docs/) after sync.
+
+### Docker
+
+```bash
+cp .env.example .env
+docker compose up -d       # API → http://localhost:3333 (binds 127.0.0.1)
+docker compose logs -f
+```
+
+Full deployment guide: [docs/DOCKER.md](docs/DOCKER.md).
+
+## Updating from upstream
+
+If you track this fork, prefer the sync PR workflow (`sync/upstream-*`) over blind hard-reset. Upstream's updater scripts are available if you installed from a tarball — see `npm run update` / `update:dry`. **Do not** use `update:hard` on a BLU3H4T fork if it would discard blue-hat commits.
 ## Architecture
 
 ```
@@ -187,6 +241,8 @@ export OPENROUTER_API_KEY=...     # or ANTHROPIC_API_KEY
 | `purple` | SENTINEL, WATCHER, VALIDATOR, HUNTER, GUARDIAN, ANALYST | Detection + vulnerability validation |
 
 ## Documentation
+
+**Providers:** OpenRouter, Venice, Anthropic, OpenAI, or a keyless local agent (Claude Code / Codex / Hermes / OpenCode / Oh My Pi). Set `OPENROUTER_API_KEY` / `VENICE_API_KEY` / `ANTHROPIC_API_KEY`, or connect an agent in Settings. xAI/Grok is not supported on this fork.
 
 | Doc | Contents |
 |---|---|
@@ -222,5 +278,5 @@ Build for defenders. HITL gates and org-intent boundaries are non-negotiable.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+AGPL-3.0. See [LICENSE](LICENSE).
 
